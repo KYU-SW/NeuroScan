@@ -1,0 +1,52 @@
+# --- Medical imaging data: never commit (ISLES'22 is CC BY 4.0; project policy: no images in Git) ---
+data/**
+!data/README.md
+!data/*/
+!data/*/.gitkeep
+# split definitions hold case IDs and summary statistics only (no images): tracked
+!data/splits/*.json
+*.nii
+*.nii.gz
+*.mha
+*.mhd
+*.raw
+*.nrrd
+*.dcm
+
+# --- Model checkpoints and experiment outputs ---
+models/**
+!models/.gitkeep
+results/**
+!results/.gitkeep
+*.pt
+*.pth
+*.ckpt
+*.onnx
+runs/
+lightning_logs/
+
+# --- Python ---
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# --- Node (frontend, later phases) ---
+node_modules/
+frontend/dist/
+
+# --- Environment / secrets ---
+.env
+.env.*
+!.env.example
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

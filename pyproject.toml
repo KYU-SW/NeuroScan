@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neuroscan-ai"
+version = "0.0.1"
+description = "2.5D deep learning ischemic stroke lesion segmentation and 3D review support (research prototype)"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+# torch is installed separately from the official PyTorch CUDA index
+# (see README "Environment setup"); listing it here only checks the version.
+dependencies = [
+    "torch>=2.14,<2.15",
+    "monai==1.6.1",
+    "numpy>=2.0,<3.0",
+    "scipy",
+    "nibabel>=5.4,<6",
+    "SimpleITK>=2.5,<3",
+    "pandas",
+    "pyyaml",
+    "tqdm",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[tool.setuptools.packages.find]
+where = ["ai"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["data: integration tests that need the real ISLES 2022 data under data/raw"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["neuroscan_ai", "scripts", "tests"]

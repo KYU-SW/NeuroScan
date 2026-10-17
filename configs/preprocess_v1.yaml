@@ -1,0 +1,11 @@
+# processed/v1 — geometry-only preprocessing for ISLES 2022 (DWI + ADC + binary GT).
+# Policy B' (decided in Phase 1, see docs/phase1_data_qa.md):
+#   XY resampled to 1.0 mm, Z kept at the original slice spacing (no synthetic slices),
+#   so processed slice k == original slice k and 2.5D neighbours are real acquired slices.
+version: v1
+dataset: isles2022
+raw_root: data/raw/ISLES2022
+out_root: data/processed/v1
+orientation: RAS            # lossless flip from LAS
+target_spacing: [1.0, 1.0, null]   # null = keep original spacing on that axis
+image_interp_order: 1       # linear for DWI/ADC; mask: linear then >= 0.5
