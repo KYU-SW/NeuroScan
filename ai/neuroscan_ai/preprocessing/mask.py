@@ -9,6 +9,10 @@ import numpy as np
 # Some ISLES'22 masks store 1 as 0.99999999977 through NIfTI scaling, so never compare to == 1.
 MASK_THRESHOLD = 0.5
 
+# A {0,1} mask that was linearly interpolated is re-binarised with >= 0.5 (ties kept, which
+# favours small lesions); see preprocessing and reconstruction.restore.
+RESAMPLED_MASK_THRESHOLD = 0.5
+
 
 def binarize(mask: np.ndarray, threshold: float = MASK_THRESHOLD) -> np.ndarray:
     """uint8 mask with values exactly {0, 1}: voxel = 1 where mask > threshold."""

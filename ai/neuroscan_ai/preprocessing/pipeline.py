@@ -19,10 +19,12 @@ import neuroscan_ai
 from neuroscan_ai.datasets.base import CaseRecord
 from neuroscan_ai.io import nifti
 from neuroscan_ai.preprocessing.geometry import SPACING_TOL_MM, reorient, resample_to_spacing
-from neuroscan_ai.preprocessing.mask import MASK_THRESHOLD, binarize, lesion_volume_ml
-
-# After linear interpolation of a {0,1} mask keep voxels >= 0.5 (ties kept: favours small lesions).
-RESAMPLED_MASK_THRESHOLD = 0.5
+from neuroscan_ai.preprocessing.mask import (
+    MASK_THRESHOLD,
+    RESAMPLED_MASK_THRESHOLD,
+    binarize,
+    lesion_volume_ml,
+)
 
 
 @dataclass(frozen=True)

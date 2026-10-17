@@ -16,9 +16,9 @@ import json
 from pathlib import Path
 
 import numpy as np
-from scipy import ndimage
 from tqdm import tqdm
 
+from neuroscan_ai.analysis.components import label_components
 from neuroscan_ai.datasets import discover
 from neuroscan_ai.io import nifti
 from neuroscan_ai.preprocessing.geometry import reorient, resample_to_grid, resample_to_spacing
@@ -55,7 +55,7 @@ def main() -> None:
         mask, affine = reorient(binarize(img.get_fdata()), img.affine)
         spacing = nifti.spacing_from_affine(affine)
         orig_vol = lesion_volume_ml(mask, spacing)
-        labels, n_comp = ndimage.label(mask, structure=np.ones((3, 3, 3)))
+        labels, n_comp = label_components(mask)
         for name, target in POLICIES.items():
             proc, proc_aff, resampled = resample_to_spacing(mask, affine, target, order=1)
             proc_bin = (proc >= 0.5).astype(np.uint8) if any(resampled) else proc

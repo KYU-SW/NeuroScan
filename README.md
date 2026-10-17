@@ -43,7 +43,10 @@ NeuroScan-ai/
 │   ├── io/            #   NIfTI 로드/저장, geometry
 │   ├── qa/            #   범용 Dataset QA
 │   ├── preprocessing/ #   mask 이진화, 방향, spacing, case 파이프라인
-│   └── data/          #   환자 단위 Split
+│   ├── data/          #   환자 단위 Split, subgroup metadata
+│   ├── reconstruction/#   Slice→Volume 재구성, processed→original 복원
+│   ├── evaluation/    #   환자 단위 metric, Negative 정책, report
+│   └── analysis/      #   병변 정량, connected component
 ├── configs/           # 실험 설정 (YAML)
 ├── scripts/           # CLI 진입점 (check_env.py 등)
 ├── tests/             # 단위 테스트
@@ -114,7 +117,7 @@ MONAI 2D UNet의 GPU forward(2채널·6채널), NiBabel NIfTI 왕복, NiBabel↔
 |---|---|---|
 | 0 | 개발환경 및 프로젝트 기반 | ✅ 완료 |
 | 1 | Dataset QA, 전처리(processed/v1), 환자 단위 Split — [docs/phase1_data_qa.md](docs/phase1_data_qa.md) | ✅ 완료 |
-| 2 | 3D 재구성·평가 모듈 | 예정 |
+| 2 | Slice→Volume 재구성, 원본 공간 복원, 평가·정량 엔진 — [docs/phase2_evaluation_reconstruction.md](docs/phase2_evaluation_reconstruction.md) | ✅ 완료 (커밋 대기) |
 | 3 | 2D U-Net Baseline | 예정 |
 | 4 | 2.5D U-Net 및 비교 | 예정 |
 | 5 | FastAPI + MySQL | 예정 |

@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from scipy import ndimage
 
+from neuroscan_ai.analysis.components import count_components
 from neuroscan_ai.datasets.base import CaseRecord
 from neuroscan_ai.io import nifti
 from neuroscan_ai.preprocessing.mask import binarize, lesion_volume_ml
@@ -82,8 +82,7 @@ def qa_case(record: CaseRecord) -> dict[str, Any]:
             row["voxel_volume_mm3"] = round(float(np.prod(sp)), 6)
             row["lesion_volume_ml"] = round(lesion_volume_ml(binary, sp), 6)
             row["has_lesion"] = bool(row["lesion_voxels"] > 0)
-            _, n_components = ndimage.label(binary, structure=np.ones((3, 3, 3)))
-            row["lesion_components_26"] = int(n_components)
+            row["lesion_components_26"] = count_components(binary)
             if row["has_lesion"]:
                 zs = np.nonzero(binary.any(axis=(0, 1)))[0]
                 row["lesion_slices"] = int(zs.size)
