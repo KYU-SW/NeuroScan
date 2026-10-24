@@ -1,0 +1,92 @@
+# Phase 3 — 2D U-Net baseline: DWI(z) + ADC(z) -> lesion mask(z).
+# Phase 4 (2.5D) should extend this file and change only data.context_slices: 0 -> 1 (2 -> 6 ch).
+run_name: 2d_baseline
+seed: 42
+
+data:
+  processed_root: data/processed/v1
+  preprocessing_version: v1
+  split_file: data/splits/split_v1_seed42.json
+  case_metadata: results/phase2/case_metadata.csv   # subgroup labels for reporting only
+  modalities: [dwi, adc]
+  context_slices: 0            # 0 = 2D (2 ch); 1 = 2.5D z-1/z/z+1 (6 ch)
+  normalization:               # per case, brain voxels only (train-split analysis, Phase 3-A)
+    dwi: {method: clip_zscore, clip_percentiles: [0.5, 99.5]}
+    adc: {method: clip_zscore, clip_percentiles: [0.5, 99.5]}
+  brain_mask_policy: skull_stripped_background   # dataset-specific; ISLES'22 is skull-stripped
+  exclude_brain_free_slices: true   # train sampling only; brain-positive negatives always kept
+  train_spatial_size: [256, 256]   # centre pad/crop for batching; inference uses full slices
+
+sampler:
+  type: positive_ratio
+  positive_fraction: 0.5       # expected share of lesion-positive slices per epoch
+  samples_per_epoch: null      # null = number of train slices
+
+augmentation:
+  enabled: true
+  affine_prob: 0.5
+  rotate_deg: 10
+  scale: 0.1
+  translate_px: 10
+  left_right_flip: false       # off: hemisphere is meaningful for later location analysis
+  intensity_scale: 0.1
+  intensity_shift: 0.1
+  intensity_prob: 0.5
+  noise_std: 0.05
+  noise_prob: 0.2
+
+model:
+  name: monai_unet
+  spatial_dims: 2
+  out_channels: 1              # logits; in_channels derived from modalities x context
+  channels: [32, 64, 128, 256, 512]
+  strides: [2, 2, 2, 2]
+  num_res_units: 0             # must stay 0: with >0 MONAI UNet puts InstanceNorm+PReLU on the
+                               # 1-channel output (failed tiny overfit, Phase 3 doc section 11)
+  norm: instance
+  dropout: 0.0
+
+loss:
+  name: dice_ce                # MONAI DiceCELoss(sigmoid=True) on logits
+  batch_dice: true
+  lambda_dice: 1.0
+  lambda_ce: 1.0
+  smooth_nr: 1.0e-5
+  smooth_dr: 1.0e-5
+
+optimizer:
+  name: adamw
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+
+scheduler:
+  name: cosine
+  eta_min: 1.0e-6
+
+training:
+  batch_size: 32
+  max_epochs: 100
+  early_stopping_patience: 20
+  precision: fp32             # official for Phase 3 and 4; fp16 forbidden (GradScaler collapse);
+                               # bf16 = documented alternative, not used
+  num_workers: 0
+  deterministic: true
+
+guards:                        # fail-fast: abort instead of silently diverging
+  max_grad_norm: 1.0e+7        # fp32 tiny-overfit diagnostics peaked at ~1.5e5
+  collapse_patience_epochs: 15 # consecutive epochs of all-zero / all-one validation output
+  all_one_fraction: 0.5        # a volume more than half 'lesion' counts as all-one
+
+inference:
+  brain_mask_gating: true      # anatomical ROI restriction (not lesion-size post-processing)
+  threshold: 0.5               # fixed; never tuned on test
+  batch_size: 64
+  size_multiple: 16
+
+checkpoint:
+  dir: models/phase3
+  select_metric: val_positive_mean_dice
+  tie_tolerance: 1.0e-4        # within tolerance: lower val loss wins, then earlier epoch
+
+output:
+  results_dir: results/phase3

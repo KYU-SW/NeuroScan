@@ -1,0 +1,32 @@
+# Phase 3-I tiny overfit sanity test: can the full pipeline memorise 3 train patients?
+# Train set == evaluation set on purpose (pipeline check, not a benchmark). Augmentation off.
+extends: 2d_baseline.yaml
+run_name: 2d_tiny_overfit
+
+tiny_overfit:
+  split: train
+  cases:                       # small / medium / large lesion, all thin-slice train patients
+    - sub-strokecase0002       # 0.94 mL
+    - sub-strokecase0028       # 7.27 mL
+    - sub-strokecase0077       # 40.4 mL
+  success_criteria:            # fixed before running
+    min_mean_patient_dice: 0.80
+    max_final_to_first_loss_ratio: 0.5
+    min_max_probability: 0.5   # predictions must not collapse to all-zero
+    max_predicted_to_gt_volume_ratio: 3.0   # nor to all-one
+
+augmentation:
+  enabled: false
+
+sampler:
+  samples_per_epoch: 512
+
+training:
+  max_epochs: 40
+  early_stopping_patience: null
+
+scheduler:
+  name: none
+
+checkpoint:
+  dir: models/phase3_tiny
