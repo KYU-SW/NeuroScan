@@ -1,0 +1,13 @@
+# Phase 4 tiny overfit sanity test: same 3 train patients, success criteria, epochs and
+# augmentation-off setting as the 2D tiny overfit; only the context width (2 -> 6 ch) changes.
+extends: 2d_tiny_overfit.yaml
+run_name: 25d_tiny_overfit
+
+data:
+  context_slices: 1
+
+checkpoint:
+  dir: models/phase4_tiny
+
+output:
+  results_dir: results/phase4

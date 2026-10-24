@@ -117,8 +117,8 @@ MONAI 2D UNet의 GPU forward(2채널·6채널), NiBabel NIfTI 왕복, NiBabel↔
 |---|---|---|
 | 0 | 개발환경 및 프로젝트 기반 | ✅ 완료 |
 | 1 | Dataset QA, 전처리(processed/v1), 환자 단위 Split — [docs/phase1_data_qa.md](docs/phase1_data_qa.md) | ✅ 완료 |
-| 2 | Slice→Volume 재구성, 원본 공간 복원, 평가·정량 엔진 — [docs/phase2_evaluation_reconstruction.md](docs/phase2_evaluation_reconstruction.md) | ✅ 완료 (커밋 대기) |
-| 3 | 2D U-Net Baseline | 예정 |
-| 4 | 2.5D U-Net 및 비교 | 예정 |
+| 2 | Slice→Volume 재구성, 원본 공간 복원, 평가·정량 엔진 — [docs/phase2_evaluation_reconstruction.md](docs/phase2_evaluation_reconstruction.md) | ✅ 완료 |
+| 3 | 2D U-Net Baseline (Val positive mean Dice 0.731) — [docs/phase3_2d_baseline.md](docs/phase3_2d_baseline.md) | ✅ 완료 |
+| 4 | 2.5D U-Net 및 비교 (Val positive mean Dice 0.743, ΔDice +0.012, 95% CI [−0.002, +0.028] — 유의차 없음) — [docs/phase4_25d.md](docs/phase4_25d.md) | ✅ 완료 |
 | 5 | FastAPI + MySQL | 예정 |
 | 6–7 | React + vtk.js 2D/3D Viewer | 예정 |

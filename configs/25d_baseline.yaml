@@ -1,0 +1,17 @@
+# Phase 4 — 2.5D U-Net: DWI(z-1, z, z+1) + ADC(z-1, z, z+1) -> lesion mask(z).
+# The only experimental change vs the 2D baseline is data.context_slices: 0 -> 1 (2 -> 6 ch).
+# Everything else (preprocessing, split, normalization, sampler, augmentation, model, loss,
+# optimizer, precision, guards, gating, threshold, checkpoint rule, seed) is inherited unchanged;
+# tests/test_phase4.py fails if any other key differs. Output paths move to phase4 so no Phase 3
+# result can be overwritten.
+extends: 2d_baseline.yaml
+run_name: 25d_baseline
+
+data:
+  context_slices: 1
+
+checkpoint:
+  dir: models/phase4
+
+output:
+  results_dir: results/phase4
