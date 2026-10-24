@@ -52,12 +52,13 @@ NeuroScan-ai/
 ├── scripts/           # CLI 진입점 (check_env.py 등)
 ├── tests/             # 단위 테스트
 ├── docs/              # 설계 문서·실험 기록
-├── backend/           # FastAPI (이후 Phase)
+├── backend/           # FastAPI 백엔드 (neuroscan_api, Phase 5B)
 ├── frontend/          # React + vtk.js Viewer (이후 Phase)
 ├── data/              # 로컬 전용: raw/ processed/ splits/   (Git 제외)
 ├── models/            # 학습된 checkpoint                    (Git 제외)
 ├── results/           # 연구 평가 결과·예측 NIfTI            (Git 제외)
-└── outputs/           # 독립 추론 결과 (Phase 5A)            (Git 제외)
+├── outputs/           # 독립 추론 결과 (Phase 5A)            (Git 제외)
+└── storage/           # FastAPI 업로드·결과·SQLite (Phase 5B) (Git 제외)
 ```
 
 ## 3. 실행 환경 (Phase 0 검증 완료, 2026-10-17)
@@ -123,7 +124,7 @@ MONAI 2D UNet의 GPU forward(2채널·6채널), NiBabel NIfTI 왕복, NiBabel↔
 | 3 | 2D U-Net Baseline (Val positive mean Dice 0.731) — [docs/phase3_2d_baseline.md](docs/phase3_2d_baseline.md) | ✅ 완료 |
 | 4 | 2.5D U-Net 및 비교 (Val positive mean Dice 0.743, ΔDice +0.012, 95% CI [−0.002, +0.028] — 유의차 없음) — [docs/phase4_25d.md](docs/phase4_25d.md) | ✅ 완료 |
 | 5A | 독립 단일 환자 추론 (DWI+ADC NIfTI → mask·정량·manifest, CLI/service) — [docs/phase5a_independent_inference.md](docs/phase5a_independent_inference.md) | ✅ 완료 |
-| 5B | FastAPI + MySQL | 예정 |
+| 5B | FastAPI 백엔드 MVP (업로드·작업 큐·단일 GPU worker·결과·Viewer 파일, localhost) — [docs/phase5b_fastapi_backend.md](docs/phase5b_fastapi_backend.md) | ✅ 완료 |
 | 6–7 | React + vtk.js 2D/3D Viewer | 예정 |
 
 ## 7. 독립 추론 (Phase 5A)

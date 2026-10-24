@@ -24,14 +24,20 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff"]
+dev = ["pytest", "ruff", "httpx"]
+# Phase 5B FastAPI backend (exact versions: requirements-api-lock.txt)
+api = ["fastapi", "uvicorn", "python-multipart", "sqlalchemy>=2,<3"]
 
 [tool.setuptools.packages.find]
-where = ["ai"]
+where = ["ai", "backend"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["data: integration tests that need the real ISLES 2022 data under data/raw"]
+pythonpath = ["backend"]
+markers = [
+    "data: integration tests that need the real ISLES 2022 data under data/raw",
+    "api: Phase 5B FastAPI backend tests (need the 'api' extra)",
+]
 
 [tool.ruff]
 line-length = 100
@@ -41,4 +47,4 @@ target-version = "py311"
 select = ["E", "F", "W", "I", "B", "UP"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["neuroscan_ai", "scripts", "tests"]
+known-first-party = ["neuroscan_ai", "neuroscan_api", "scripts", "tests"]

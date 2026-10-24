@@ -26,6 +26,12 @@ runs/
 lightning_logs/
 # independent inference outputs (Phase 5A): patient images and results, never committed
 outputs/
+# FastAPI backend storage (Phase 5B): uploads, runs, temp files and the SQLite database
+storage/
+# SQLite databases and their WAL/SHM files anywhere (e.g. NEUROSCAN_STORAGE_ROOT moved elsewhere)
+*.db
+*.db-wal
+*.db-shm
 
 # --- Python ---
 .venv/
