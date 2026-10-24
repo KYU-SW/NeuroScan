@@ -46,7 +46,8 @@ NeuroScan-ai/
 │   ├── data/          #   환자 단위 Split, subgroup metadata
 │   ├── reconstruction/#   Slice→Volume 재구성, processed→original 복원
 │   ├── evaluation/    #   환자 단위 metric, Negative 정책, report
-│   └── analysis/      #   병변 정량, connected component
+│   ├── analysis/      #   병변 정량, connected component
+│   └── inference/     #   독립 단일 환자 추론 service (Phase 5A; Web·DB 비의존)
 ├── configs/           # 실험 설정 (YAML)
 ├── scripts/           # CLI 진입점 (check_env.py 등)
 ├── tests/             # 단위 테스트
@@ -55,7 +56,8 @@ NeuroScan-ai/
 ├── frontend/          # React + vtk.js Viewer (이후 Phase)
 ├── data/              # 로컬 전용: raw/ processed/ splits/   (Git 제외)
 ├── models/            # 학습된 checkpoint                    (Git 제외)
-└── results/           # 실험 결과·예측 NIfTI                 (Git 제외)
+├── results/           # 연구 평가 결과·예측 NIfTI            (Git 제외)
+└── outputs/           # 독립 추론 결과 (Phase 5A)            (Git 제외)
 ```
 
 ## 3. 실행 환경 (Phase 0 검증 완료, 2026-10-17)
@@ -120,5 +122,23 @@ MONAI 2D UNet의 GPU forward(2채널·6채널), NiBabel NIfTI 왕복, NiBabel↔
 | 2 | Slice→Volume 재구성, 원본 공간 복원, 평가·정량 엔진 — [docs/phase2_evaluation_reconstruction.md](docs/phase2_evaluation_reconstruction.md) | ✅ 완료 |
 | 3 | 2D U-Net Baseline (Val positive mean Dice 0.731) — [docs/phase3_2d_baseline.md](docs/phase3_2d_baseline.md) | ✅ 완료 |
 | 4 | 2.5D U-Net 및 비교 (Val positive mean Dice 0.743, ΔDice +0.012, 95% CI [−0.002, +0.028] — 유의차 없음) — [docs/phase4_25d.md](docs/phase4_25d.md) | ✅ 완료 |
-| 5 | FastAPI + MySQL | 예정 |
+| 5A | 독립 단일 환자 추론 (DWI+ADC NIfTI → mask·정량·manifest, CLI/service) — [docs/phase5a_independent_inference.md](docs/phase5a_independent_inference.md) | ✅ 완료 |
+| 5B | FastAPI + MySQL | 예정 |
 | 6–7 | React + vtk.js 2D/3D Viewer | 예정 |
+
+## 7. 독립 추론 (Phase 5A)
+
+skull-strip된 DWI + ADC NIfTI 한 쌍(같은 격자)을 입력하면 Phase 4 2.5D U-Net으로 병변 영역을 분할하고
+원본 DWI 공간의 mask와 정량 결과를 저장합니다. **연구 및 의료영상 검토 보조용이며 진단을 확정하지
+않습니다.** 출력 점수는 보정되지 않은 모델 점수이며 질병 확률이 아닙니다.
+
+```powershell
+.venv\Scripts\python.exe scripts\infer_case.py --dwi <dwi.nii.gz> --adc <adc.nii.gz> --output outputs
+# 선택: --case-id <비식별 ID> --device auto|cuda|cpu --strict --json --no-export-inputs
+```
+
+결과: `outputs/<case_id>/<run_id>/` — `prediction_mask.nii.gz`(uint8 0/1, 원본 DWI shape·affine),
+`quantification.json`, `inference_metadata.json`, `manifest.json`, `inputs/`(header를 비운 사본, 공유
+기본 대상 아님), `logs/`. 기존 폴더는 덮어쓰지 않으며, 실패하면 `.<run_id>.failed/`에 metadata와 로그만
+남습니다. 입력 파일명·절대 경로·NIfTI header 문자열은 기록하지 않습니다. Exit code와 계약 상세는
+[docs/phase5a_independent_inference.md](docs/phase5a_independent_inference.md) 참고.

@@ -1,0 +1,54 @@
+# Phase 5A independent single-patient inference (research prototype, not for clinical use).
+# Paths are relative to the repository root. Thresholds below are technical checks derived from
+# the ISLES'22 train split (results/phase3/intensity, results/qa); they are not clinical criteria.
+version: inference_v1
+
+model:
+  checkpoint: models/phase4/25d_baseline_20261024-192617_34d18df104da/best.pt
+  training_config: configs/25d_baseline.yaml
+  expected_config_hash: 34d18df104da   # checkpoint info.config_hash == hash(training_config)
+  expected_context_slices: 1
+  expected_in_channels: 6
+  expected_preprocessing_version: v1
+  model_name: 25d_baseline
+  model_type: monai_unet_2.5d
+
+preprocessing_config: configs/preprocess_v1.yaml
+split_file: data/splits/split_v1_seed42.json   # read only to refuse sealed test-case inputs
+
+validation:
+  min_inplane_voxels: 32
+  min_slices: 3
+  warn_slices_below: 16          # smallest train volume has 25 slices
+  min_spacing_mm: 0.5
+  max_inplane_spacing_mm: 5.0
+  max_slice_spacing_mm: 10.0
+  train_inplane_spacing_mm: [0.875, 2.0]
+  train_slice_spacing_mm: [2.0, 5.0]
+  spacing_tolerance_mm: 1.0e-3
+  zooms_affine_tolerance_mm: 1.0e-3
+  oblique_warn_deg: 1.0
+  train_brain_fraction: [0.147, 0.266]
+  # brain medians: train DWI 56-340; ADC 0.00077-0.00124 / 0.78-1.18 / 800-1250 (three storage
+  # units), each widened x0.5 .. x2
+  dwi_brain_median_range: [28.0, 680.0]
+  adc_brain_median_ranges:
+    - [0.000385, 0.00248]
+    - [0.388, 2.36]
+    - [400.0, 2500.0]
+  adc_negative_fraction_warn: 0.05
+
+quantification:
+  hemisphere:
+    max_obliquity_deg: 10.0        # beyond this the hemisphere estimate is not_available
+    midline_band_mm: 5.0           # voxels within +-band of the estimated midline = "midline"
+    max_brain_asymmetry: 0.10      # |left extent - right extent| / total brain width
+    max_midline_disagreement_mm: 5.0   # brain centroid vs brain bounding-box centre (world x)
+    bilateral_min_ml: 0.1
+  low_score_band: [0.5, 0.7]
+  uncertain_band: [0.3, 0.7]
+
+warnings:                          # D11: technical warnings, results are never altered
+  large_lesion_ml: 300.0
+  large_lesion_brain_fraction: 0.30
+  many_components: 50

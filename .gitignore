@@ -24,6 +24,8 @@ results/**
 *.onnx
 runs/
 lightning_logs/
+# independent inference outputs (Phase 5A): patient images and results, never committed
+outputs/
 
 # --- Python ---
 .venv/
