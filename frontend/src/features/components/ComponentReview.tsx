@@ -5,14 +5,20 @@
  * region from the display only. Selection/hiding live in browser memory: the prediction files,
  * the volumes and every number in the result stay unchanged.
  */
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 
-import type { ResultComponent, RunResult } from "../../api/schemas";
+import type { ResultComponent } from "../../api/schemas";
 import { ko } from "../../i18n/ko";
 import { componentColor, OTHER_LABEL } from "../viewer/labelLut";
 import { MASK_PALETTE, type ViewerEngine } from "../viewer/ViewerEngine";
 import { useViewerStore } from "../viewer/viewerStore";
-import { displaySliceRange, isSmallRegion, targetVoxel, visibleComponents } from "./reviewModel";
+import {
+  displaySliceRange,
+  type GridVolume,
+  isSmallRegion,
+  targetVoxel,
+  visibleComponents,
+} from "./reviewModel";
 
 const SIDE: Record<string, string> = {
   left: ko.result.left,
@@ -23,22 +29,45 @@ const SIDE: Record<string, string> = {
 const PAGE = 10;
 
 interface Props {
-  result: RunResult;
+  components: ResultComponent[];
+  truncated: boolean;
+  largestMl: number;
+  /** Base image grid (file voxels, true affine) used for navigation and slice numbers. */
+  base: GridVolume | undefined;
   engine: ViewerEngine | null;
   /** The result has the component labelmap (colours, highlighting and hiding need it). */
   labelmapAvailable: boolean;
+  /** Phase 7-B research: extra per-region line (GT comparison); general results pass nothing. */
+  extra?: (c: ResultComponent) => ReactNode;
+  /** Extra note under the heading (research mode hints). */
+  note?: ReactNode;
+  /** Research: overlay-dependent controls (hide / show only / show all). When disabled, the
+   * buttons stay visible but disabled with the reason; general results pass nothing (enabled). */
+  overlayControls?: { enabled: boolean; reason?: string; action?: ReactNode };
+  /** Research: swatch matching what the current overlay shows (default: the region colour). */
+  swatchFor?: (c: ResultComponent) => ReactNode;
 }
 
-export function ComponentReview({ result, engine, labelmapAvailable }: Props) {
+export function ComponentReview({
+  components,
+  truncated,
+  largestMl,
+  base,
+  engine,
+  labelmapAvailable,
+  extra,
+  note,
+  overlayControls,
+  swatchFor,
+}: Props) {
   const s = useViewerStore();
+  const controls = overlayControls?.enabled ?? true;
+  const reason = controls ? undefined : overlayControls?.reason;
   const [showAll, setShowAll] = useState(false);
-  const base = result.viewer.volumes.find((v) => v.id === "dwi");
-  const largest = result.lesion.largest_component_volume_ml;
-  const labels = result.components.flatMap((c) =>
-    c.display_label === null ? [] : [c.display_label],
-  );
+  const largest = largestMl;
+  const labels = components.flatMap((c) => (c.display_label === null ? [] : [c.display_label]));
   const list = visibleComponents(
-    result.components,
+    components,
     s.componentSort,
     s.componentFilter,
     s.selectedComponent,
@@ -58,7 +87,7 @@ export function ComponentReview({ result, engine, labelmapAvailable }: Props) {
   return (
     <details className="card components-review" open>
       <summary>
-        {ko.components.title} ({result.components.length})
+        {ko.components.title} ({components.length})
       </summary>
       {labelmapAvailable ? (
         <>
@@ -70,7 +99,13 @@ export function ComponentReview({ result, engine, labelmapAvailable }: Props) {
       ) : (
         <p className="note">{ko.components.noLabelmap}</p>
       )}
-      {result.components_truncated && <p className="note">{ko.result.truncated}</p>}
+      {truncated && <p className="note">{ko.result.truncated}</p>}
+      {note}
+      {reason && (
+        <div className="note controls-disabled" id="component-controls-reason" role="status">
+          {reason} {overlayControls?.action}
+        </div>
+      )}
 
       <div className="row wrap">
         <label>
@@ -112,14 +147,18 @@ export function ComponentReview({ result, engine, labelmapAvailable }: Props) {
           </button>
           <button
             type="button"
-            disabled={s.selectedComponent === null}
+            disabled={!controls || s.selectedComponent === null}
+            title={reason}
+            aria-describedby={reason ? "component-controls-reason" : undefined}
             onClick={() => s.selectedComponent !== null && s.showOnly(s.selectedComponent, labels)}
           >
             {ko.components.showOnly}
           </button>
           <button
             type="button"
-            disabled={s.hiddenComponents.size === 0}
+            disabled={!controls || s.hiddenComponents.size === 0}
+            title={reason}
+            aria-describedby={reason ? "component-controls-reason" : undefined}
             onClick={s.showAllComponents}
           >
             {ko.components.showAll}
@@ -133,7 +172,7 @@ export function ComponentReview({ result, engine, labelmapAvailable }: Props) {
         <ol className="components" aria-label={ko.components.title}>
           {shown.map((c) => {
             // pre-7-A results have no size_rank: the API list is already largest first
-            const rank = c.size_rank ?? result.components.indexOf(c) + 1;
+            const rank = c.size_rank ?? components.indexOf(c) + 1;
             const dl = c.display_label;
             const selected = labelmapAvailable && dl !== null && dl === s.selectedComponent;
             const hidden = labelmapAvailable && dl !== null && s.hiddenComponents.has(dl);
@@ -144,11 +183,15 @@ export function ComponentReview({ result, engine, labelmapAvailable }: Props) {
                 className={`component${selected ? " selected" : ""}${hidden ? " hidden" : ""}`}
                 aria-current={selected ? "true" : undefined}
               >
-                <span
-                  className="component-swatch"
-                  style={{ backgroundColor: swatch(c) }}
-                  aria-hidden="true"
-                />
+                {swatchFor ? (
+                  swatchFor(c)
+                ) : (
+                  <span
+                    className="component-swatch"
+                    style={{ backgroundColor: swatch(c) }}
+                    aria-hidden="true"
+                  />
+                )}
                 <span className="component-text">
                   <strong>{ko.components.region(rank)}</strong> · {c.volume_ml.toFixed(3)} mL
                   {range && ` · ${ko.components.slices(range.first, range.last)}`} ·{" "}
@@ -160,6 +203,7 @@ export function ComponentReview({ result, engine, labelmapAvailable }: Props) {
                     </span>
                   )}
                   {hidden && <span className="badge neutral">{ko.components.hiddenTag}</span>}
+                  {extra && <span className="component-extra">{extra(c)}</span>}
                 </span>
                 <span className="component-actions">
                   <button
@@ -177,6 +221,9 @@ export function ComponentReview({ result, engine, labelmapAvailable }: Props) {
                       aria-label={
                         hidden ? ko.components.showLabel(rank) : ko.components.hideLabel(rank)
                       }
+                      disabled={!controls}
+                      title={reason}
+                      aria-describedby={reason ? "component-controls-reason" : undefined}
                       onClick={() => (hidden ? s.showComponent(dl) : s.hideComponent(dl))}
                     >
                       {hidden ? ko.components.show : ko.components.hide}

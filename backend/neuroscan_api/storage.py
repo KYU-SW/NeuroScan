@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 
 from neuroscan_api.errors import ApiError
 
-AREAS = ("uploads", "runs", "temp")
+AREAS = ("uploads", "runs", "temp", "research")  # research: Phase 7-B bundles
 
 
 class StorageError(Exception):

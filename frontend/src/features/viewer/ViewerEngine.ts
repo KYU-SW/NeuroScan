@@ -4,6 +4,7 @@
  *
  * Coordinates are RAS+ world millimetres, the same space as the API's *_world_mm fields.
  */
+import type { ResearchOverlay } from "./differenceLut";
 import type { ComponentDisplay } from "./labelLut";
 import type { CrosshairLocation } from "./location";
 
@@ -22,6 +23,8 @@ export interface VolumeBuffers {
   /** Phase 7-A: component display labelmap (uint8, same grid and foreground as the mask). When
    * present it is shown instead of the mask; the mask itself is never modified. */
   components?: ArrayBuffer;
+  /** Phase 7-B research only: TP/FP/FN difference labelmap (1/2/3) on the same grid. */
+  difference?: ArrayBuffer;
 }
 
 export interface IntensityWindow {
@@ -104,6 +107,12 @@ export interface ViewerEngine {
   jumpToVoxel(vox: [number, number, number]): void;
   /** Set one slider: integer slice index along an anatomical axis of the display grid. */
   setSliceVoxel(axis: SliceAxis, index: number): void;
+
+  // --- Phase 7-B (additive; general result screens never call it) -----------------------------
+  /** Research overlay on the difference labelmap ("difference" TP/FP/FN or "ground_truth");
+   * null = the prediction labelmap with the component display. Throws without a difference
+   * volume. Display only. */
+  setResearchOverlay(overlay: ResearchOverlay | null): void;
 }
 
 export function hexToRgb(hex: string): [number, number, number] {

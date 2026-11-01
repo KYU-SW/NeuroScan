@@ -16,6 +16,7 @@
  */
 import { cmapper, Niivue, type NiivueEventListener, NVImage, SLICE_TYPE } from "@niivue/niivue";
 
+import { buildDifferenceLut, isResearchOverlay, type ResearchOverlay } from "./differenceLut";
 import { buildComponentLut, checkDisplay, type ComponentDisplay, SHOW_ALL } from "./labelLut";
 import {
   applyAffine,
@@ -65,6 +66,7 @@ const NAMES: Record<BaseKind | "mask", string> = {
   mask: "prediction_mask.nii.gz",
 };
 const COMPONENTS_NAME = "prediction_components.nii.gz";
+const DIFFERENCE_NAME = "difference.nii.gz";
 
 type DrawColorMap = Parameters<typeof cmapper.makeDrawLut>[0];
 
@@ -106,6 +108,8 @@ export class NiivueEngine implements ViewerEngine {
   private render3DBackground = true;
   private cameraListeners = new Set<() => void>();
   private componentDisplay: ComponentDisplay | null = null;
+  private difference: NVImage | null = null;
+  private overlay: ResearchOverlay | null = null;
   private locationListeners = new Set<(location: CrosshairLocation) => void>();
   /** Spike diagnostics: NiiVue locationChange events received / rejected by the type guard. */
   readonly locationStats = { niivueEvents: 0, rejected: 0 };
@@ -173,7 +177,15 @@ export class NiivueEngine implements ViewerEngine {
       NVImage.loadFromUrl({ url: volumes.adc, name: NAMES.adc, colormap: "gray" }),
       NVImage.loadFromUrl({ ...drawing, colormap: "gray" }),
     ]);
+    const difference = volumes.difference
+      ? await NVImage.loadFromUrl({
+          url: volumes.difference,
+          name: DIFFERENCE_NAME,
+          colormap: "gray",
+        })
+      : null;
     if (this.nv !== nv) return; // disposed while loading
+    this.difference = difference;
     this.images = { dwi, adc };
     this.defaultWindows = { dwi: windowOf(dwi), adc: windowOf(adc) };
     this.mask = mask;
@@ -189,9 +201,10 @@ export class NiivueEngine implements ViewerEngine {
     nv.addVolume(next);
     this.base = kind;
     nv.setInterpolation(false);
-    if (this.mask) {
+    const drawing = this.drawingImage();
+    if (drawing) {
       nv.setDrawingEnabled(false);
-      if (!nv.loadDrawing(this.mask)) throw new Error("mask grid does not match the base volume");
+      if (!nv.loadDrawing(drawing)) throw new Error("mask grid does not match the base volume");
       this.applyMaskStyle();
     }
     this.applyView();
@@ -290,6 +303,27 @@ export class NiivueEngine implements ViewerEngine {
   setComponentDisplay(display: ComponentDisplay | null): void {
     this.componentDisplay = display ? checkDisplay(display) : null;
     if (this.nv && this.mask) this.applyMaskStyle();
+  }
+
+  setResearchOverlay(overlay: ResearchOverlay | null): void {
+    if (overlay !== null && !isResearchOverlay(overlay))
+      throw new Error("invalid research overlay");
+    if (overlay !== null && !this.difference) throw new Error("no difference labelmap loaded");
+    const before = this.drawingImage();
+    this.overlay = overlay;
+    const nv = this.nv;
+    const after = this.drawingImage();
+    if (!nv || !after) return;
+    if (after !== before) {
+      nv.setDrawingEnabled(false);
+      if (!nv.loadDrawing(after)) throw new Error("labelmap grid does not match the base volume");
+    }
+    this.applyMaskStyle();
+  }
+
+  /** Drawing layer source: the difference labelmap for research overlays, else mask/labelmap. */
+  private drawingImage(): NVImage | null {
+    return this.overlay && this.difference ? this.difference : this.mask;
   }
 
   onLocationChange(listener: (location: CrosshairLocation) => void): () => void {
@@ -405,6 +439,8 @@ export class NiivueEngine implements ViewerEngine {
     gl?.getExtension("WEBGL_lose_context")?.loseContext();
     this.images = {};
     this.mask = null;
+    this.difference = null;
+    this.overlay = null;
     this.canvas = null;
     this.base = null;
   }
@@ -421,7 +457,9 @@ export class NiivueEngine implements ViewerEngine {
 
   private applyMaskStyle(): void {
     const nv = this.requireNv();
-    if (this.colorStrategy === "customLut") {
+    if (this.overlay && this.difference) {
+      nv.drawLut = cmapper.makeDrawLut(lutToColorMap(buildDifferenceLut(this.overlay)));
+    } else if (this.colorStrategy === "customLut") {
       // one path for every label value: Phase 6 single colour (no component display set) or
       // Phase 7-A component colours / selection / hiding
       const display = this.componentDisplay ?? { ...SHOW_ALL, coloring: "single" as const };

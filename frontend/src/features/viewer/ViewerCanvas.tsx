@@ -63,12 +63,26 @@ export function ViewerCanvas({ buffers, description, onEngine, onError }: Props)
     engine.setBase(state.base);
     bump();
   }, [engine, state.base]);
+  // Phase 7-B: research overlays exist only when the difference labelmap was loaded (research
+  // pages); general results never have it, so their engine calls stay exactly as before
+  const hasDifference = buffers.difference !== undefined;
+  const baseOnly = hasDifference && state.researchMode === "base";
   useEffect(() => {
     if (!engine) return;
     engine.setMaskColor(state.maskColor);
     engine.setMaskOpacity(state.maskOpacity);
-    engine.setMaskVisible(state.maskVisible);
-  }, [engine, state.maskColor, state.maskOpacity, state.maskVisible]);
+    engine.setMaskVisible(state.maskVisible && !baseOnly);
+  }, [engine, state.maskColor, state.maskOpacity, state.maskVisible, baseOnly]);
+  useEffect(() => {
+    if (!engine || !hasDifference) return;
+    engine.setResearchOverlay(
+      state.researchMode === "difference"
+        ? { kind: "difference", visible: state.differenceClasses }
+        : state.researchMode === "gt"
+          ? { kind: "ground_truth" }
+          : null,
+    );
+  }, [engine, hasDifference, state.researchMode, state.differenceClasses]);
   const hasLabelmap = buffers.components !== undefined;
   useEffect(() => {
     if (!engine) return;

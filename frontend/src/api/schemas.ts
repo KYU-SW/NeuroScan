@@ -248,3 +248,162 @@ export type RunResult = z.infer<typeof runResultSchema>;
 export type ViewerVolume = z.infer<typeof viewerVolumeSchema>;
 export type ResultComponent = z.infer<typeof componentSchema>;
 export type ErrorResponse = z.infer<typeof errorResponseSchema>;
+
+// --- Phase 7-B research validation (own contract; never mixed with RunResult) ---------------
+
+export const RESEARCH_ALIAS = /^val-\d{3}$/;
+const nullableNumber = z.number().nullable();
+const groupType = z.enum([
+  "one_to_one",
+  "split",
+  "merge",
+  "complex",
+  "prediction_only",
+  "ground_truth_only",
+]);
+const sliceRange = z.strictObject({
+  axis: z.number().int().min(0).max(2),
+  first: z.number().int().nonnegative(),
+  last: z.number().int().nonnegative(),
+});
+
+export const researchCaseListSchema = z.strictObject({
+  cases: z.array(
+    z.strictObject({
+      alias: z.string().regex(RESEARCH_ALIAS),
+      dataset_id: z.string(),
+      split: z.literal("val"),
+      has_ground_truth: z.boolean(),
+      created_at: z.string(),
+    }),
+  ),
+  notice: z.string(),
+});
+
+export const researchVolumeSchema = z.strictObject({
+  id: z.enum(["dwi", "adc", "prediction_mask", "prediction_components", "difference"]),
+  role: z.string(),
+  file_id: uuid,
+  url: z.string().regex(FILE_URL),
+  mime_type: z.string(),
+  sha256: SHA256,
+  shape: z.array(z.number().int()).length(3),
+  spacing_mm: vec3,
+  affine: z.array(z.array(z.number()).length(4)).length(4),
+  orientation: z.string().regex(/^[LRAPSI]{3}$/),
+  dtype: z.string(),
+});
+
+export const researchCaseSchema = z.strictObject({
+  alias: z.string().regex(RESEARCH_ALIAS),
+  dataset_id: z.string(),
+  split: z.literal("val"),
+  created_at: z.string(),
+  model: z.strictObject({
+    model_name: z.string().nullable(),
+    checkpoint_sha256: z.string().nullable(),
+    config_hash: z.string().nullable(),
+    threshold: z.number(),
+    preprocessing_version: z.string().nullable(),
+  }),
+  metrics: z.strictObject({
+    has_lesion: z.boolean(),
+    gt_voxels: z.number().int(),
+    prediction_voxels: z.number().int(),
+    tp_voxels: z.number().int(),
+    fp_voxels: z.number().int(),
+    fn_voxels: z.number().int(),
+    dice: nullableNumber,
+    iou: nullableNumber,
+    sensitivity: nullableNumber,
+    precision: nullableNumber,
+    gt_volume_ml: z.number(),
+    prediction_volume_ml: z.number(),
+    volume_error_ml: z.number(),
+    absolute_volume_error_ml: z.number(),
+    relative_volume_error_percent: nullableNumber,
+    component_count_gt: z.number().int(),
+    component_count_prediction: z.number().int(),
+    negative_outcome: z.enum(["correct_negative", "false_positive_case"]).nullable(),
+    predicted_lesion_voxels: z.number().int().nullable(),
+    predicted_lesion_volume_ml: nullableNumber,
+    any_false_positive: z.boolean().nullable(),
+    false_positive_volume_ml: nullableNumber,
+    false_positive_component_count: z.number().int().nullable(),
+  }),
+  prediction_components: z.array(componentSchema),
+  ground_truth_components: z.array(
+    z.strictObject({
+      size_rank: z.number().int().min(1),
+      voxel_count: z.number().int(),
+      volume_ml: z.number(),
+      centroid_world_mm: vec3,
+      representative_voxel: voxel3,
+      representative_world_mm: vec3,
+      slice_range: sliceRange,
+    }),
+  ),
+  matching: z.strictObject({
+    method: z.string(),
+    groups: z.array(
+      z.strictObject({
+        group_id: z.number().int(),
+        group_type: groupType,
+        prediction_component_ids: z.array(z.number().int()),
+        ground_truth_component_ids: z.array(z.number().int()),
+        overlap_voxel_count: z.number().int(),
+        union_voxel_count: z.number().int(),
+        iou: nullableNumber,
+        prediction_volume_ml: z.number(),
+        gt_volume_ml: z.number(),
+        centroid_distance_mm: nullableNumber,
+      }),
+    ),
+    prediction: z.array(
+      z.strictObject({
+        size_rank: z.number().int(),
+        gt_overlap: z.boolean(),
+        group_id: z.number().int(),
+        group_type: groupType,
+        tp_voxels: z.number().int(),
+        fp_voxels: z.number().int(),
+        tp_ratio: z.number(),
+        ground_truth_component_ids: z.array(z.number().int()),
+      }),
+    ),
+    ground_truth: z.array(
+      z.strictObject({
+        size_rank: z.number().int(),
+        detected_voxels: z.number().int(),
+        missed_voxels: z.number().int(),
+        group_id: z.number().int(),
+        group_type: groupType,
+        prediction_component_ids: z.array(z.number().int()),
+      }),
+    ),
+  }),
+  volumes: z.array(researchVolumeSchema),
+  views: z.record(z.string(), z.record(z.string(), z.unknown())),
+  legend: z.array(
+    z.strictObject({
+      label: z.number().int(),
+      key: z.enum(["tp", "fp", "fn"]),
+      color: z.string().regex(/^#[0-9A-Fa-f]{6}$/),
+      ko: z.string(),
+      en: z.string(),
+    }),
+  ),
+  gt_only_color: z.string().regex(/^#[0-9A-Fa-f]{6}$/),
+  reproducibility: z.strictObject({
+    reference: z.string().nullable(),
+    identical: z.boolean().nullable(),
+    mismatched_voxels: z.number().int().nullable(),
+  }),
+  notice: z.string(),
+  disclaimer: z.strictObject({ en: z.string(), ko: z.string() }),
+});
+
+export type ResearchCaseList = z.infer<typeof researchCaseListSchema>;
+export type ResearchCase = z.infer<typeof researchCaseSchema>;
+export type ResearchVolume = z.infer<typeof researchVolumeSchema>;
+export type GroupType = z.infer<typeof groupType>;

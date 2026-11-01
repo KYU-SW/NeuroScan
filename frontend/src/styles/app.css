@@ -372,3 +372,250 @@ button.danger {
   background: #eceff3;
   color: #333;
 }
+
+/* Phase 7-B research validation mode */
+.research-banner {
+  padding: 8px 12px;
+  background: #fbeff6;
+  border: 2px solid #cc79a7;
+  color: #3a1530;
+}
+.research-info {
+  margin: 8px 12px;
+}
+.legend ul {
+  list-style: none;
+  padding-left: 0;
+  margin: 4px 0;
+}
+.legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.legend-swatch {
+  width: 12px;
+  height: 12px;
+  border: 1px solid #555;
+  border-radius: 2px;
+}
+.research-matching table {
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.research-matching th,
+.research-matching td {
+  border-bottom: 1px solid #e4e7ec;
+  padding: 2px 4px;
+  text-align: left;
+}
+.research-extra {
+  display: block;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* Phase 7-B research viewer UX */
+.mode-band {
+  margin: 0 0 4px;
+  padding: 4px 8px;
+  border-left: 4px solid #cc79a7;
+  background: #f6f7f9;
+}
+.selection-summary {
+  margin: 4px 0 8px;
+  padding: 6px 8px;
+  border: 1px solid #c9ced6;
+  border-radius: 4px;
+  background: #fff;
+}
+.selection-summary h3 {
+  margin: 0 0 4px;
+  font-size: 1rem;
+}
+.component-swatch.empty {
+  background: transparent;
+  border-style: dashed;
+}
+.component-swatch.split {
+  display: inline-flex;
+  overflow: hidden;
+}
+.component-swatch.split > span {
+  flex: 1;
+}
+.controls-disabled {
+  border-left: 3px solid #8a8a8a;
+  padding-left: 6px;
+}
+
+/* --- Research layout (Phase 7-B): research pages own the viewport height ----------------------
+   Only pages that contain .research-page match these rules; the general result viewer keeps
+   .result-layout, .center and .viewer-host exactly as before.
+   Canvas loop fix: the canvas host is absolutely positioned inside .viewer-slot (a flex child
+   with min-height: 0), so the canvas's pixel size can never grow the layout and NiiVue's
+   ResizeObserver only follows the slot's settled size. */
+.app:has(.research-page) {
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+}
+.app:has(.research-page) .app-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.research-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.research-page > .research-banner,
+.research-page > .research-info {
+  flex: none;
+}
+.research-page > .research-info {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  margin: 4px 12px 0;
+  font-size: 0.85rem;
+}
+.research-page > .research-info dt::after {
+  content: ":";
+}
+.research-page > .research-info dd {
+  margin-right: 10px;
+}
+.research-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 260px minmax(480px, 1fr) minmax(360px, 28vw);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 12px;
+  padding: 8px 12px 12px;
+}
+.research-layout > .left,
+.research-layout > .right {
+  /* positioned so absolutely positioned descendants (e.g. .sr-only text) are clipped by the
+     panel scroll box instead of lengthening the document */
+  position: relative;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.research-layout > .center.research-center {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 6px;
+  gap: 4px;
+}
+.research-center > .mode-band {
+  flex: none;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.research-center > .legend {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 12px;
+  color: #fff;
+  font-size: 0.85rem;
+}
+.research-center > .legend h4 {
+  margin: 0;
+  font-size: 0.85rem;
+}
+.research-center > .legend ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  margin: 0;
+}
+.research-center > .selection-summary {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 38%;
+  overflow-y: auto;
+  margin: 0;
+}
+.research-center > .selection-summary dl.kv {
+  grid-template-columns: repeat(4, max-content minmax(0, 1fr));
+  gap: 2px 8px;
+  font-size: 0.85rem;
+}
+.viewer-slot {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 320px;
+  overflow: hidden;
+}
+.viewer-slot > .viewer-host {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  min-height: 0;
+}
+.viewer-slot .viewer-canvas {
+  min-height: 0;
+}
+.research-layout .component {
+  flex-wrap: wrap;
+}
+.research-layout .component-actions {
+  margin-left: auto;
+}
+.research-layout .research-matching {
+  overflow-x: auto;
+}
+@media (max-width: 1599px) {
+  .research-center > .selection-summary dl.kv {
+    grid-template-columns: repeat(2, max-content minmax(0, 1fr));
+  }
+}
+/* below 1280 px: right panel moves under the viewer; the page scrolls instead of being
+   viewport-locked, and the viewer keeps a fixed, definite height */
+@media (max-width: 1279px) {
+  .app:has(.research-page) {
+    height: auto;
+    min-height: 100vh;
+  }
+  .app:has(.research-page) .app-main {
+    overflow: visible;
+  }
+  .research-layout {
+    grid-template-columns: 240px minmax(0, 1fr);
+    grid-template-rows: auto auto;
+  }
+  .research-layout > .center.research-center {
+    height: clamp(460px, 72vh, 900px);
+  }
+  .research-layout > .left {
+    max-height: clamp(460px, 72vh, 900px);
+  }
+  .research-layout > .right {
+    grid-column: 1 / -1;
+    overflow-y: visible;
+  }
+}
+.research-modes label.row {
+  flex-wrap: nowrap;
+  align-items: flex-start;
+}
+.research-modes label.row input {
+  flex: none;
+  margin-top: 3px;
+}

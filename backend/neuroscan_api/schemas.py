@@ -251,3 +251,162 @@ class RunResultResponse(Strict):
     warnings: list[WarningItem]
     viewer: Viewer
     disclaimer: Disclaimer = Disclaimer()
+
+
+# --- Phase 7-B research validation (separate from the general result contract) ---------------
+
+RESEARCH_NOTICE = (
+    "연구·검증 모드: Validation 데이터에서 AI 결과와 Ground Truth를 비교합니다. "
+    "임상 진단 결과가 아닙니다."
+)
+
+
+class ResearchCaseSummary(Strict):
+    alias: str
+    dataset_id: str
+    split: Literal["val"]
+    has_ground_truth: bool
+    created_at: str
+
+
+class ResearchCaseList(Strict):
+    cases: list[ResearchCaseSummary]
+    notice: str = RESEARCH_NOTICE
+
+
+class ResearchModel(Strict):
+    model_name: str | None
+    checkpoint_sha256: str | None
+    config_hash: str | None
+    threshold: float
+    preprocessing_version: str | None
+
+
+class ResearchMetrics(Strict):
+    """evaluate_case output (Phase 2 definitions). Overlap metrics are null when GT is empty."""
+
+    has_lesion: bool
+    gt_voxels: int
+    prediction_voxels: int
+    tp_voxels: int
+    fp_voxels: int
+    fn_voxels: int
+    dice: float | None
+    iou: float | None
+    sensitivity: float | None
+    precision: float | None
+    gt_volume_ml: float
+    prediction_volume_ml: float
+    volume_error_ml: float
+    absolute_volume_error_ml: float
+    relative_volume_error_percent: float | None
+    component_count_gt: int
+    component_count_prediction: int
+    negative_outcome: Literal["correct_negative", "false_positive_case"] | None
+    predicted_lesion_voxels: int | None
+    predicted_lesion_volume_ml: float | None
+    any_false_positive: bool | None
+    false_positive_volume_ml: float | None
+    false_positive_component_count: int | None
+
+
+class GroundTruthComponent(Strict):
+    size_rank: int
+    voxel_count: int
+    volume_ml: float
+    centroid_world_mm: list[float]
+    representative_voxel: list[int]
+    representative_world_mm: list[float]
+    slice_range: SliceRange
+
+
+GroupType = Literal[
+    "one_to_one", "split", "merge", "complex", "prediction_only", "ground_truth_only"
+]
+
+
+class MatchGroup(Strict):
+    group_id: int
+    group_type: GroupType
+    prediction_component_ids: list[int]
+    ground_truth_component_ids: list[int]
+    overlap_voxel_count: int
+    union_voxel_count: int
+    iou: float | None
+    prediction_volume_ml: float
+    gt_volume_ml: float
+    centroid_distance_mm: float | None
+
+
+class PredictionMatch(Strict):
+    size_rank: int
+    gt_overlap: bool
+    group_id: int
+    group_type: GroupType
+    tp_voxels: int
+    fp_voxels: int
+    tp_ratio: float
+    ground_truth_component_ids: list[int]
+
+
+class GroundTruthMatch(Strict):
+    size_rank: int
+    detected_voxels: int
+    missed_voxels: int
+    group_id: int
+    group_type: GroupType
+    prediction_component_ids: list[int]
+
+
+class ResearchMatching(Strict):
+    method: str
+    groups: list[MatchGroup]
+    prediction: list[PredictionMatch]
+    ground_truth: list[GroundTruthMatch]
+
+
+class LegendItem(Strict):
+    label: int
+    key: Literal["tp", "fp", "fn"]
+    color: str
+    ko: str
+    en: str
+
+
+class ResearchVolume(Strict):
+    id: Literal["dwi", "adc", "prediction_mask", "prediction_components", "difference"]
+    role: str
+    file_id: str
+    url: str
+    mime_type: str
+    sha256: str
+    shape: list[int]
+    spacing_mm: list[float]
+    affine: list[list[float]]
+    orientation: str
+    dtype: str
+
+
+class Reproducibility(Strict):
+    reference: str | None
+    identical: bool | None
+    mismatched_voxels: int | None
+
+
+class ResearchCaseDetail(Strict):
+    alias: str
+    dataset_id: str
+    split: Literal["val"]
+    created_at: str
+    model: ResearchModel
+    metrics: ResearchMetrics
+    prediction_components: list[Component]
+    ground_truth_components: list[GroundTruthComponent]
+    matching: ResearchMatching
+    volumes: list[ResearchVolume]
+    views: dict[str, dict[str, Any]]
+    legend: list[LegendItem]
+    gt_only_color: str
+    reproducibility: Reproducibility
+    notice: str = RESEARCH_NOTICE
+    disclaimer: Disclaimer = Disclaimer()

@@ -15,7 +15,7 @@ from neuroscan_api import API_PREFIX, __version__
 from neuroscan_api.context import AppContext
 from neuroscan_api.db.session import Database
 from neuroscan_api.errors import install_handlers
-from neuroscan_api.routes import router
+from neuroscan_api.routes import research_router, router
 from neuroscan_api.security import GuardMiddleware
 from neuroscan_api.services.runs import mark_stale_runs
 from neuroscan_api.settings import Settings, load_settings
@@ -71,6 +71,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.ctx = ctx
     install_handlers(app)
     app.include_router(router)
+    if settings.research_enabled:  # Phase 7-B: absent (404) unless explicitly enabled
+        app.include_router(research_router)
     if settings.cors_origins:
         app.add_middleware(
             CORSMiddleware,

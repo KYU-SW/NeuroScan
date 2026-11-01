@@ -6,6 +6,7 @@ port: 8000
 debug: false             # true = development mode: Swagger/OpenAPI at /api/v1/docs
 allowed_hosts: [127.0.0.1, localhost]
 cors_origins: []         # e.g. ["http://localhost:5173"] for a local React dev server
+research_enabled: false  # Phase 7-B research validation routes; enable explicitly (localhost only)
 storage_root: storage    # uploads/, runs/, temp/, neuroscan.db (git-ignored)
 inference_config: configs/inference_v1.yaml
 

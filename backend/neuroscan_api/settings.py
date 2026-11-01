@@ -46,6 +46,8 @@ class Settings(BaseModel):
     inference_config: Path = Path("configs/inference_v1.yaml")
     limits: Limits = Limits()
     worker: WorkerSettings = WorkerSettings()
+    # Phase 7-B: research validation routes exist only when explicitly enabled (localhost only)
+    research_enabled: bool = False
 
     def resolved(self) -> Settings:
         def absolute(p: Path) -> Path:
@@ -83,6 +85,9 @@ def load_settings(path: str | Path | None = None, **overrides) -> Settings:
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if os.environ.get("NEUROSCAN_STORAGE_ROOT"):
         data["storage_root"] = os.environ["NEUROSCAN_STORAGE_ROOT"]
+    if os.environ.get("NEUROSCAN_RESEARCH_ENABLED"):
+        flag = os.environ["NEUROSCAN_RESEARCH_ENABLED"].lower()
+        data["research_enabled"] = flag in ("1", "true", "yes")
     if os.environ.get("NEUROSCAN_DEBUG"):
         data["debug"] = os.environ["NEUROSCAN_DEBUG"].lower() in ("1", "true", "yes")
     data.update(overrides)

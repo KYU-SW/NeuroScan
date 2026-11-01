@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from neuroscan_api.context import AppContext, audit
-from neuroscan_api.db.models import FileResource, InferenceRun
+from neuroscan_api.db.models import FileResource, InferenceRun, ResearchFile
 from neuroscan_api.errors import ApiError
 from neuroscan_api.storage import StorageError
 
@@ -44,7 +44,7 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def verified_path(ctx: AppContext, row: FileResource) -> Path:
+def verified_path(ctx: AppContext, row: FileResource | ResearchFile) -> Path:
     try:
         path = ctx.storage.resolve(row.storage_area, row.rel_path)
     except StorageError:
@@ -54,10 +54,33 @@ def verified_path(ctx: AppContext, row: FileResource) -> Path:
     return path
 
 
+RESEARCH_DOWNLOAD_NAMES = {  # Phase 7-B research files (served only in research mode)
+    "dwi": "dwi.nii.gz",
+    "adc": "adc.nii.gz",
+    "prediction_mask": "prediction_mask.nii.gz",
+    "prediction_components": "prediction_components.nii.gz",
+    "difference": "difference.nii.gz",
+}
+
+
+def _serve_research(ctx: AppContext, file_id: str) -> ServedFile:
+    from neuroscan_api.services.research import research_file
+
+    row = research_file(ctx, file_id)  # None unless research mode is enabled
+    if row is None or row.storage_area != "research" or row.role not in RESEARCH_DOWNLOAD_NAMES:
+        raise file_not_found()
+    path = verified_path(ctx, row)
+    with ctx.db.write() as s:
+        audit(s, "research_file_served", file_id=row.id, role=row.role)
+    return ServedFile(path, row.mime_type, RESEARCH_DOWNLOAD_NAMES[row.role], row.sha256)
+
+
 def serve_file(ctx: AppContext, file_id: str) -> ServedFile:
     with ctx.db.read() as s:
         row = s.get(FileResource, file_id)
-        if row is None or not row.servable or row.role not in DOWNLOAD_NAMES:
+        if row is None:
+            return _serve_research(ctx, file_id)
+        if not row.servable or row.role not in DOWNLOAD_NAMES:
             raise file_not_found()
         if row.run_id is not None:
             run = s.get(InferenceRun, row.run_id)

@@ -1,0 +1,303 @@
+/** Synthetic research API responses shaped like the backend contract (no patient data). */
+import type { ResearchCase, ResearchCaseList } from "../src/api/schemas";
+
+const FILE = (n: number) => `0000000${n}-0000-4000-8000-00000000001${n}`;
+const AFFINE = [
+  [-2, 0, 0, 110],
+  [0, 2, 0, -110],
+  [0, 0, 2, -50],
+  [0, 0, 0, 1],
+];
+type Vid = ResearchCase["volumes"][number]["id"];
+const vol = (id: Vid, n: number) => ({
+  id,
+  role: id === "dwi" || id === "adc" ? "image" : "label",
+  file_id: FILE(n),
+  url: `/api/v1/files/${FILE(n)}`,
+  mime_type: "application/gzip",
+  sha256: String(n).repeat(64),
+  shape: [112, 112, 73],
+  spacing_mm: [2, 2, 2],
+  affine: AFFINE,
+  orientation: "LAS",
+  dtype: id === "dwi" || id === "adc" ? "float32" : "uint8",
+});
+
+const comp = (rank: number, ml: number, vox: [number, number, number]) => ({
+  label: 4 - rank,
+  voxel_count: Math.round(ml / 0.008),
+  volume_ml: ml,
+  centroid_voxel: [vox[0] + 0.2, vox[1], vox[2]],
+  centroid_world_mm: [110 - 2 * vox[0], 2 * vox[1] - 110, 2 * vox[2] - 50],
+  bbox_min_voxel: [vox[0], vox[1], vox[2] - 1],
+  bbox_max_voxel: [vox[0] + 1, vox[1] + 1, vox[2] + 1],
+  hemisphere_estimate: "left",
+  display_label: rank,
+  size_rank: rank,
+  representative_voxel: vox,
+  representative_world_mm: [110 - 2 * vox[0], 2 * vox[1] - 110, 2 * vox[2] - 50],
+  slice_range: { axis: 2, first: vox[2] - 1, last: vox[2] + 1 },
+});
+
+export const LEGEND: ResearchCase["legend"] = [
+  { label: 1, key: "tp", color: "#009E73", ko: "일치 영역 (TP)", en: "Overlap (TP)" },
+  { label: 2, key: "fp", color: "#E69F00", ko: "AI만 표시한 영역 (FP)", en: "AI only (FP)" },
+  {
+    label: 3,
+    key: "fn",
+    color: "#56B4E9",
+    ko: "GT에 있으나 AI가 놓친 영역 (FN)",
+    en: "Ground truth only (FN)",
+  },
+];
+
+export function researchList(): ResearchCaseList {
+  return {
+    cases: ["val-001", "val-002"].map((alias) => ({
+      alias,
+      dataset_id: "isles2022",
+      split: "val" as const,
+      has_ground_truth: true,
+      created_at: "2026-11-01T00:00:00Z",
+    })),
+    notice: "연구·검증 모드",
+  };
+}
+
+export function researchCase(over: Partial<ResearchCase> = {}): ResearchCase {
+  return {
+    alias: "val-001",
+    dataset_id: "isles2022",
+    split: "val",
+    created_at: "2026-11-01T00:00:00Z",
+    model: {
+      model_name: "25d_baseline",
+      checkpoint_sha256: "ff61bc7f".padEnd(64, "0"),
+      config_hash: "34d18df104da",
+      threshold: 0.5,
+      preprocessing_version: "v1",
+    },
+    metrics: {
+      has_lesion: true,
+      gt_voxels: 5845,
+      prediction_voxels: 6122,
+      tp_voxels: 5665,
+      fp_voxels: 457,
+      fn_voxels: 180,
+      dice: 0.94677028,
+      iou: 0.89892098,
+      sensitivity: 0.96920445,
+      precision: 0.92535119,
+      gt_volume_ml: 46.76,
+      prediction_volume_ml: 48.976,
+      volume_error_ml: 2.216,
+      absolute_volume_error_ml: 2.216,
+      relative_volume_error_percent: 4.739,
+      component_count_gt: 2,
+      component_count_prediction: 3,
+      negative_outcome: null,
+      predicted_lesion_voxels: null,
+      predicted_lesion_volume_ml: null,
+      any_false_positive: null,
+      false_positive_volume_ml: null,
+      false_positive_component_count: null,
+    },
+    prediction_components: [
+      comp(1, 48.5, [65, 31, 13]),
+      comp(2, 0.4, [81, 51, 57]),
+      comp(3, 0.076, [55, 44, 2]),
+    ],
+    ground_truth_components: [
+      {
+        size_rank: 1,
+        voxel_count: 5840,
+        volume_ml: 46.72,
+        centroid_world_mm: [-20, -48, -24],
+        representative_voxel: [64, 31, 13],
+        representative_world_mm: [-18, -48, -24],
+        slice_range: { axis: 2, first: 4, last: 25 },
+      },
+      {
+        size_rank: 2,
+        voxel_count: 5,
+        volume_ml: 0.04,
+        centroid_world_mm: [10, 0, 0],
+        representative_voxel: [50, 55, 25],
+        representative_world_mm: [10, 0, 0],
+        slice_range: { axis: 2, first: 25, last: 25 },
+      },
+    ],
+    matching: {
+      method: "overlap_graph_26_connectivity_min_1_voxel",
+      groups: [
+        {
+          group_id: 1,
+          group_type: "one_to_one",
+          prediction_component_ids: [1],
+          ground_truth_component_ids: [1],
+          overlap_voxel_count: 5665,
+          union_voxel_count: 6237,
+          iou: 0.9083,
+          prediction_volume_ml: 48.5,
+          gt_volume_ml: 46.72,
+          centroid_distance_mm: 1.2,
+        },
+        {
+          group_id: 2,
+          group_type: "prediction_only",
+          prediction_component_ids: [2],
+          ground_truth_component_ids: [],
+          overlap_voxel_count: 0,
+          union_voxel_count: 50,
+          iou: 0,
+          prediction_volume_ml: 0.4,
+          gt_volume_ml: 0,
+          centroid_distance_mm: null,
+        },
+        {
+          group_id: 3,
+          group_type: "prediction_only",
+          prediction_component_ids: [3],
+          ground_truth_component_ids: [],
+          overlap_voxel_count: 0,
+          union_voxel_count: 10,
+          iou: 0,
+          prediction_volume_ml: 0.076,
+          gt_volume_ml: 0,
+          centroid_distance_mm: null,
+        },
+        {
+          group_id: 4,
+          group_type: "ground_truth_only",
+          prediction_component_ids: [],
+          ground_truth_component_ids: [2],
+          overlap_voxel_count: 0,
+          union_voxel_count: 5,
+          iou: 0,
+          prediction_volume_ml: 0,
+          gt_volume_ml: 0.04,
+          centroid_distance_mm: null,
+        },
+      ],
+      prediction: [
+        {
+          size_rank: 1,
+          gt_overlap: true,
+          group_id: 1,
+          group_type: "one_to_one",
+          tp_voxels: 5665,
+          fp_voxels: 397,
+          tp_ratio: 0.9345,
+          ground_truth_component_ids: [1],
+        },
+        {
+          size_rank: 2,
+          gt_overlap: false,
+          group_id: 2,
+          group_type: "prediction_only",
+          tp_voxels: 0,
+          fp_voxels: 50,
+          tp_ratio: 0,
+          ground_truth_component_ids: [],
+        },
+        {
+          size_rank: 3,
+          gt_overlap: false,
+          group_id: 3,
+          group_type: "prediction_only",
+          tp_voxels: 0,
+          fp_voxels: 10,
+          tp_ratio: 0,
+          ground_truth_component_ids: [],
+        },
+      ],
+      ground_truth: [
+        {
+          size_rank: 1,
+          detected_voxels: 5665,
+          missed_voxels: 175,
+          group_id: 1,
+          group_type: "one_to_one",
+          prediction_component_ids: [1],
+        },
+        {
+          size_rank: 2,
+          detected_voxels: 0,
+          missed_voxels: 5,
+          group_id: 4,
+          group_type: "ground_truth_only",
+          prediction_component_ids: [],
+        },
+      ],
+    },
+    volumes: [
+      vol("dwi", 1),
+      vol("adc", 2),
+      vol("prediction_mask", 3),
+      vol("prediction_components", 4),
+      vol("difference", 5),
+    ],
+    views: {
+      sagittal: { array_axis: 0, count: 112, axis_increases_toward: "L" },
+      coronal: { array_axis: 1, count: 112, axis_increases_toward: "A" },
+      axial: { array_axis: 2, count: 73, axis_increases_toward: "S" },
+    },
+    legend: LEGEND,
+    gt_only_color: "#CC79A7",
+    reproducibility: {
+      reference: "stored validation prediction (Phase 4)",
+      identical: true,
+      mismatched_voxels: 0,
+    },
+    notice: "연구·검증 모드",
+    disclaimer: { en: "Research prototype output.", ko: "연구용 결과입니다." },
+    ...over,
+  };
+}
+
+/** Empty ground truth: overlap metrics undefined, every AI voxel is AI-only. */
+export function negativeResearchCase(): ResearchCase {
+  const r = researchCase({ alias: "val-003" });
+  return {
+    ...r,
+    metrics: {
+      ...r.metrics,
+      has_lesion: false,
+      gt_voxels: 0,
+      prediction_voxels: 60,
+      tp_voxels: 0,
+      fp_voxels: 60,
+      fn_voxels: 0,
+      dice: null,
+      iou: null,
+      sensitivity: null,
+      precision: null,
+      gt_volume_ml: 0,
+      prediction_volume_ml: 0.48,
+      volume_error_ml: 0.48,
+      absolute_volume_error_ml: 0.48,
+      relative_volume_error_percent: null,
+      component_count_gt: 0,
+      negative_outcome: "false_positive_case",
+      predicted_lesion_voxels: 60,
+      predicted_lesion_volume_ml: 0.48,
+      any_false_positive: true,
+      false_positive_volume_ml: 0.48,
+      false_positive_component_count: 3,
+    },
+    ground_truth_components: [],
+    matching: {
+      ...r.matching,
+      groups: r.matching.groups.filter((g) => g.group_type === "prediction_only"),
+      prediction: r.matching.prediction.map((p) => ({
+        ...p,
+        gt_overlap: false,
+        group_type: "prediction_only" as const,
+        tp_voxels: 0,
+        tp_ratio: 0,
+        ground_truth_component_ids: [],
+      })),
+      ground_truth: [],
+    },
+  };
+}

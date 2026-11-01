@@ -1,4 +1,5 @@
 /** Test double: records calls instead of rendering (jsdom has no WebGL). */
+import { isResearchOverlay, type ResearchOverlay } from "./differenceLut";
 import { checkDisplay, type ComponentDisplay } from "./labelLut";
 import {
   checkVoxel,
@@ -144,6 +145,14 @@ export class FakeViewerEngine implements ViewerEngine {
   private move(location: CrosshairLocation) {
     this.crosshair = location;
     for (const listener of this.locationListeners) listener(location);
+  }
+  researchOverlay: ResearchOverlay | null = null;
+  setResearchOverlay(overlay: ResearchOverlay | null) {
+    if (overlay !== null && !isResearchOverlay(overlay))
+      throw new Error("invalid research overlay");
+    if (overlay !== null && !this.loaded?.difference) throw new Error("no difference labelmap");
+    this.researchOverlay = overlay;
+    this.log("setResearchOverlay", overlay);
   }
   setComponentDisplay(display: ComponentDisplay | null) {
     this.componentDisplay = display ? checkDisplay(display) : null;

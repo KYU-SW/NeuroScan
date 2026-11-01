@@ -6,7 +6,14 @@
  * Phase 7-A, the voxel computed from the API's world mm with the volume's true affine — never
  * through NiiVue's axis-aligned approximation (wrong by up to 20 voxels on oblique images).
  */
-import type { ResultComponent, ViewerVolume } from "../../api/schemas";
+import type { ResultComponent } from "../../api/schemas";
+
+/** The grid facts the review needs (general result volumes and research volumes alike). */
+export interface GridVolume {
+  shape: number[];
+  affine: number[][];
+  orientation: string;
+}
 import { applyAffine, invertAffine, type Vec3 } from "../viewer/location";
 import type { ComponentFilter, ComponentSort } from "../viewer/viewerStore";
 
@@ -25,27 +32,27 @@ function clampVoxel(v: readonly number[], shape: readonly number[]): Vec3 {
   ) as Vec3;
 }
 
-export function worldToFileVoxel(mm: readonly number[], volume: ViewerVolume): Vec3 {
+export function worldToFileVoxel(mm: readonly number[], volume: GridVolume): Vec3 {
   const inv = invertAffine(volume.affine);
   return clampVoxel(applyAffine(inv, [mm[0] ?? 0, mm[1] ?? 0, mm[2] ?? 0]), volume.shape);
 }
 
 /** Voxel to move to when the component is selected (always inside it when the API provides
  * the representative voxel). */
-export function targetVoxel(c: ResultComponent, volume: ViewerVolume): Vec3 {
+export function targetVoxel(c: ResultComponent, volume: GridVolume): Vec3 {
   if (c.representative_voxel) return clampVoxel(c.representative_voxel, volume.shape);
   return worldToFileVoxel(c.centroid_world_mm, volume);
 }
 
 /** Lesion centre (API centre of mass, file-grid voxel) — replaces the Phase 6 world-mm jump. */
-export function lesionCenterVoxel(com: readonly number[] | null, volume: ViewerVolume | undefined) {
+export function lesionCenterVoxel(com: readonly number[] | null, volume: GridVolume | undefined) {
   return com && volume ? clampVoxel(com, volume.shape) : null;
 }
 
 /** 1-based slice range as shown by the axial slider (display grid runs inferior -> superior). */
 export function displaySliceRange(
   c: ResultComponent,
-  volume: ViewerVolume,
+  volume: GridVolume,
 ): { first: number; last: number } | null {
   const axis =
     c.slice_range?.axis ?? [...volume.orientation].findIndex((ch) => ch === "S" || ch === "I");

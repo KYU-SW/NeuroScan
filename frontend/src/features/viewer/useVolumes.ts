@@ -8,7 +8,13 @@ import { useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { fetchApiFile, isApiFileUrl, sha256Hex } from "../../api/client";
-import type { ViewerVolume } from "../../api/schemas";
+/** What the download needs from a validated volume (general results and research cases). */
+export interface VolumeRef {
+  id: string;
+  file_id: string;
+  url: string;
+  sha256: string;
+}
 import type { VolumeBuffers } from "./ViewerEngine";
 
 export class IntegrityError extends Error {
@@ -18,10 +24,7 @@ export class IntegrityError extends Error {
   }
 }
 
-export async function downloadVerified(
-  v: ViewerVolume,
-  signal?: AbortSignal,
-): Promise<ArrayBuffer> {
+export async function downloadVerified(v: VolumeRef, signal?: AbortSignal): Promise<ArrayBuffer> {
   if (!isApiFileUrl(v.url)) throw new Error("blocked non-API file URL");
   const buf = await fetchApiFile(v.url, signal);
   if ((await sha256Hex(buf)) !== v.sha256) throw new IntegrityError();
@@ -29,12 +32,17 @@ export async function downloadVerified(
 }
 
 const REQUIRED = ["dwi", "adc", "prediction_mask"] as const;
-const OPTIONAL = "prediction_components";
 
-export function useVolumes(volumes: ViewerVolume[] | undefined) {
-  // results made before Phase 7-A have no labelmap: it is then simply not requested
-  const optional = volumes?.find((v) => v.id === OPTIONAL);
-  const ids = optional ? [...REQUIRED, OPTIONAL] : [...REQUIRED];
+export function useVolumes(volumes: readonly VolumeRef[] | undefined) {
+  // optional volumes are requested only when the response names them: the component labelmap
+  // (absent in results made before Phase 7-A) and the research difference labelmap (Phase 7-B)
+  const hasComponents = volumes?.some((v) => v.id === "prediction_components") ?? false;
+  const hasDifference = volumes?.some((v) => v.id === "difference") ?? false;
+  const ids = [
+    ...REQUIRED,
+    ...(hasComponents ? ["prediction_components"] : []),
+    ...(hasDifference ? ["difference"] : []),
+  ];
   const picked = ids.map((id) => volumes?.find((v) => v.id === id));
   const results = useQueries({
     queries: picked.map((v, i) => ({
@@ -49,14 +57,25 @@ export function useVolumes(volumes: ViewerVolume[] | undefined) {
       retry: false,
     })),
   });
-  const [dwi, adc, mask, components] = results.map((r) => r.data);
-  const needComponents = optional !== undefined;
+  const byId = new Map(ids.map((id, i) => [id, results[i]?.data]));
+  const dwi = byId.get("dwi");
+  const adc = byId.get("adc");
+  const mask = byId.get("prediction_mask");
+  const components = byId.get("prediction_components");
+  const difference = byId.get("difference");
   // stable identity: the viewer engine is rebuilt only when the bytes themselves change
   const buffers = useMemo<VolumeBuffers | null>(() => {
     if (!dwi || !adc || !mask) return null;
-    if (!needComponents) return { dwi, adc, mask };
-    return components ? { dwi, adc, mask, components } : null;
-  }, [dwi, adc, mask, components, needComponents]);
+    if (hasComponents && !components) return null;
+    if (hasDifference && !difference) return null;
+    return {
+      dwi,
+      adc,
+      mask,
+      ...(components ? { components } : {}),
+      ...(difference ? { difference } : {}),
+    };
+  }, [dwi, adc, mask, components, difference, hasComponents, hasDifference]);
   const error = results.find((r) => r.error)?.error ?? null;
   const done = results.filter((r) => r.data).length;
   return { buffers, error, done, total: ids.length };

@@ -6,6 +6,7 @@
  * engine -> store connection (connectCrosshair) and is never pushed back into the engine. */
 import { create } from "zustand";
 
+import type { DifferenceClass } from "./differenceLut";
 import type { Coloring } from "./labelLut";
 import type { CrosshairLocation } from "./location";
 
@@ -32,6 +33,11 @@ export interface ViewerState {
   componentSort: ComponentSort;
   componentFilter: ComponentFilter;
   crosshair: CrosshairLocation | null;
+  /** Phase 7-B research overlay mode (used only when a difference labelmap is loaded). */
+  researchMode: ResearchMode;
+  differenceClasses: Readonly<Record<DifferenceClass, boolean>>;
+  /** Research only: selected ground-truth region (size rank); exclusive with selectedComponent. */
+  selectedGtComponent: number | null;
   /** Incremented whenever the engine state changed outside React (re-read slice/window). */
   tick: number;
   bumpTick: () => void;
@@ -57,8 +63,16 @@ export interface ViewerState {
   setComponentSort: (sort: ComponentSort) => void;
   setComponentFilter: (filter: ComponentFilter) => void;
   setCrosshair: (location: CrosshairLocation) => void;
+  setResearchMode: (mode: ResearchMode) => void;
+  toggleDifferenceClass: (cls: DifferenceClass) => void;
+  selectGtComponent: (rank: number) => void;
+  /** Research page defaults: difference map first, AI prediction in one orange (#E69F00). */
+  enterResearch: () => void;
   reset: () => void;
 }
+
+/** AI prediction (component review) / ground truth / TP-FP-FN / base image only. */
+export type ResearchMode = "ai" | "gt" | "difference" | "base";
 
 export type ComponentSort = "largest" | "smallest";
 export type ComponentFilter = "all" | "selected" | "visible";
@@ -77,6 +91,9 @@ const initial = {
   componentSort: "largest" as ComponentSort,
   componentFilter: "all" as ComponentFilter,
   crosshair: null as CrosshairLocation | null,
+  researchMode: "difference" as ResearchMode,
+  differenceClasses: { tp: true, fp: true, fn: true } as Readonly<Record<DifferenceClass, boolean>>,
+  selectedGtComponent: null as number | null,
   tick: 0,
 };
 
@@ -110,9 +127,10 @@ export const useViewerStore = create<ViewerState>()((set) => ({
   selectComponent: (label) =>
     set((s) => ({
       selectedComponent: label,
+      selectedGtComponent: null,
       hiddenComponents: without(s.hiddenComponents, label),
     })),
-  clearSelection: () => set({ selectedComponent: null }),
+  clearSelection: () => set({ selectedComponent: null, selectedGtComponent: null }),
   hideComponent: (label) =>
     set((s) => ({
       hiddenComponents: new Set([...s.hiddenComponents, label]),
@@ -125,5 +143,19 @@ export const useViewerStore = create<ViewerState>()((set) => ({
   setComponentSort: (componentSort) => set({ componentSort }),
   setComponentFilter: (componentFilter) => set({ componentFilter }),
   setCrosshair: (crosshair) => set({ crosshair }),
+  setResearchMode: (researchMode) => set({ researchMode }),
+  selectGtComponent: (rank) => set({ selectedGtComponent: rank, selectedComponent: null }),
+  enterResearch: () =>
+    set({
+      researchMode: "difference",
+      componentColoring: "single",
+      maskColor: "orange",
+      selectedComponent: null,
+      selectedGtComponent: null,
+    }),
+  toggleDifferenceClass: (cls) =>
+    set((s) => ({
+      differenceClasses: { ...s.differenceClasses, [cls]: !s.differenceClasses[cls] },
+    })),
   reset: () => set({ ...initial, hiddenComponents: new Set<number>() }),
 }));

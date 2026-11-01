@@ -19,7 +19,9 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+# v1 -> v2 (Phase 7-B): adds research_cases and research_files only; no existing table or
+# column changes (see Database.init_schema for the upgrade and the pre-upgrade backup).
 
 RUN_STATUSES = ("queued", "running", "succeeded", "failed", "cancelled")
 ACTIVE_STATUSES = ("queued", "running")
@@ -113,6 +115,51 @@ class FileResource(Base):
         UniqueConstraint("storage_area", "rel_path", name="uq_file_location"),
         UniqueConstraint("run_id", "role", name="uq_file_run_role"),
     )
+
+
+class ResearchCase(Base):
+    """Phase 7-B research validation case (validation split only). Metadata and storage-relative
+    paths only - metrics, components and matching live in JSON files of the bundle. No source
+    case ID: the alias -> case mapping is kept in a local file outside the database."""
+
+    __tablename__ = "research_cases"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    alias: Mapped[str] = mapped_column(String(16), unique=True)
+    dataset_id: Mapped[str] = mapped_column(String(32))
+    split: Mapped[str] = mapped_column(String(8))
+    source_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    checkpoint_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    config_hash: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    threshold: Mapped[float] = mapped_column(Float)
+    preprocessing_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    bundle_rel: Mapped[str] = mapped_column(String(255))
+    metrics_path: Mapped[str] = mapped_column(String(255))
+    component_matching_path: Mapped[str] = mapped_column(String(255))
+    has_ground_truth: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+    files: Mapped[list[ResearchFile]] = relationship(
+        back_populates="research_case", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class ResearchFile(Base):
+    """Servable research file (storage_area "research"). Kept apart from file_resources, whose
+    case_id references general cases; /files/{id} serves these only when research mode is on."""
+
+    __tablename__ = "research_files"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    research_case_id: Mapped[str] = mapped_column(
+        ForeignKey("research_cases.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[str] = mapped_column(String(32))
+    storage_area: Mapped[str] = mapped_column(String(8), default="research")
+    rel_path: Mapped[str] = mapped_column(String(255))
+    mime_type: Mapped[str] = mapped_column(String(64))
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+    research_case: Mapped[ResearchCase] = relationship(back_populates="files")
+    __table_args__ = (UniqueConstraint("research_case_id", "role", name="uq_research_file_role"),)
 
 
 class AuditEvent(Base):

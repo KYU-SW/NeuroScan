@@ -20,14 +20,18 @@ from neuroscan_api.schemas import (
     ErrorResponse,
     HealthResponse,
     ModelInfoResponse,
+    ResearchCaseDetail,
+    ResearchCaseList,
     RunCreateRequest,
     RunCreateResponse,
     RunResultResponse,
     RunStatusResponse,
 )
-from neuroscan_api.services import cases, files, results, runs
+from neuroscan_api.services import cases, files, research, results, runs
 
 router = APIRouter(prefix=API_PREFIX)
+# Phase 7-B: included by create_app only when research_enabled is true (otherwise plain 404)
+research_router = APIRouter(prefix=f"{API_PREFIX}/research")
 OPTIONAL_BODY = Body(None)  # POST /runs body is optional ({"allow_rerun": false} by default)
 ERRORS = {
     code: {"model": ErrorResponse}
@@ -199,3 +203,16 @@ def get_file(request: Request, file_id: str):
         filename=served.download_name,
         headers={"ETag": f'"{served.sha256}"', "Cache-Control": "no-store"},
     )
+
+
+# --- Phase 7-B research validation (validation split only; alias identifiers) ----------------
+
+
+@research_router.get("/cases", response_model=ResearchCaseList, responses=ERRORS)
+def list_research_cases(request: Request) -> ResearchCaseList:
+    return research.list_cases(ctx_of(request))
+
+
+@research_router.get("/cases/{alias}", response_model=ResearchCaseDetail, responses=ERRORS)
+def get_research_case(request: Request, alias: str) -> ResearchCaseDetail:
+    return research.get_case(ctx_of(request), alias)

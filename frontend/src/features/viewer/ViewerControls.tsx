@@ -27,6 +27,9 @@ interface Props {
   lesionVoxel: [number, number, number] | null;
   labelmapAvailable: boolean;
   emptyMask: boolean;
+  /** Research pages own the colour policy (orange AI prediction + review toggle): hide the
+   * palette and the colour-mode switch there. General results leave this off. */
+  hideMaskStyle?: boolean;
 }
 
 export function ViewerControls({
@@ -35,6 +38,7 @@ export function ViewerControls({
   lesionVoxel,
   labelmapAvailable,
   emptyMask,
+  hideMaskStyle = false,
 }: Props) {
   // s.tick changes whenever the engine moved outside React, so these reads stay current
   const s = useViewerStore();
@@ -247,7 +251,7 @@ export function ViewerControls({
           />
           <span>{s.maskOpacity.toFixed(2)}</span>
         </label>
-        {labelmapAvailable && (
+        {labelmapAvailable && !hideMaskStyle && (
           <div className="segmented" role="radiogroup" aria-label={ko.components.coloring}>
             {(["component", "single"] as const).map((c) => (
               <button
@@ -263,8 +267,13 @@ export function ViewerControls({
             ))}
           </div>
         )}
-        {labelmapAvailable && <p className="note">{ko.components.paletteNote}</p>}
-        <div className="swatches" role="radiogroup" aria-label={ko.viewer.color}>
+        {labelmapAvailable && !hideMaskStyle && <p className="note">{ko.components.paletteNote}</p>}
+        <div
+          className="swatches"
+          role="radiogroup"
+          aria-label={ko.viewer.color}
+          hidden={hideMaskStyle}
+        >
           {MASK_COLOR_NAMES.map((name) => (
             <button
               key={name}

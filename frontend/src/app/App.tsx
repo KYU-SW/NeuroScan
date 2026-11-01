@@ -4,6 +4,7 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 
 import { CasePage } from "../pages/CasePage";
 import { NotFoundPage } from "../pages/NotFoundPage";
+import { ResearchCasePage, ResearchListPage } from "../pages/ResearchPages";
 import { ResultViewerPage } from "../pages/ResultViewerPage";
 import { RunProgressPage } from "../pages/RunProgressPage";
 import { UploadPage } from "../pages/UploadPage";
@@ -17,6 +18,9 @@ export function AppRoutes() {
       <Route path="/cases/:caseId" element={<CasePage />} />
       <Route path="/runs/:runId" element={<RunProgressPage />} />
       <Route path="/runs/:runId/viewer" element={<ResultViewerPage />} />
+      {/* Phase 7-B: research validation (API answers 404 unless research mode is enabled) */}
+      <Route path="/research" element={<ResearchListPage />} />
+      <Route path="/research/cases/:alias" element={<ResearchCasePage />} />
       {import.meta.env.DEV && <Route path="/__spike" element={<SpikePage />} />}
       <Route path="*" element={<NotFoundPage />} />
     </Routes>

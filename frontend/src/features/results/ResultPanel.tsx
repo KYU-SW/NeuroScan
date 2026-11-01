@@ -108,7 +108,14 @@ export function ResultPanel({ result, engine, labelmapAvailable }: Props) {
       </details>
 
       {result.components.length > 0 && (
-        <ComponentReview result={result} engine={engine} labelmapAvailable={labelmapAvailable} />
+        <ComponentReview
+          components={result.components}
+          truncated={result.components_truncated}
+          largestMl={result.lesion.largest_component_volume_ml}
+          base={result.viewer.volumes.find((v) => v.id === "dwi")}
+          engine={engine}
+          labelmapAvailable={labelmapAvailable}
+        />
       )}
 
       <details className="card scores">

@@ -18,6 +18,7 @@ import {
   connectCrosshair,
   type Vec3,
 } from "../features/viewer/location";
+import { DIFFERENCE_PALETTE, GT_ONLY_COLOR } from "../features/viewer/differenceLut";
 import { hexToRgb, MASK_PALETTE } from "../features/viewer/ViewerEngine";
 import { NiivueEngine } from "../features/viewer/NiivueEngine";
 import type { CheckResult } from "./runSpike";
@@ -645,6 +646,136 @@ export async function runPhase7Spike(
       engine.dispose();
     }
   }, "components");
+
+  // --- 2b. Phase 7-B research overlays on a difference labelmap -----------------------------
+  await run(async () => {
+    const canvas = newCanvas();
+    const engine = new NiivueEngine();
+    try {
+      await engine.attach(canvas);
+      // blocks: label 1 -> TP, 2 -> FP, 3 -> FN, 255 -> TP (difference labelmap 1/2/3)
+      const cls: Record<number, number> = { 1: 1, 2: 2, 3: 3, 255: 1 };
+      const diff = new Uint8Array(DIMS[0] * DIMS[1] * DIMS[2]);
+      for (const b of BLOCKS)
+        for (let k = 8; k <= 11; k++)
+          for (let j = b.j[0]; j <= b.j[1]; j++)
+            for (let i = b.i[0]; i <= b.i[1]; i++) diff[idx(i, j, k, DIMS)] = cls[b.label] ?? 0;
+      await engine.load({
+        ...(await componentVolumes(false)),
+        difference: await gzip(niftiFromArray(diff, "uint8", DIMS, AFFINE)),
+      });
+      engine.setMaskOpacity(1);
+      engine.setView("axial");
+      engine.setSliceVoxel(2, 9);
+      engine.setComponentDisplay(SHOW_ALL);
+      const shot = (visible = true) => {
+        engine.setMaskVisible(visible);
+        return snapshot(engine, canvas);
+      };
+      const off = shot(false);
+      const ai = shot();
+      const aiPix = changedPixels(off, ai);
+      const region = byLabel(ai, aiPix, BLOCK_LABELS).sets;
+      const reg = (l: number) => region.get(l) ?? [];
+      const exact = (img: Uint8ClampedArray, l: number, hex: string) =>
+        reg(l).filter((p) => close(px(img, p), hexToRgb(hex))).length / Math.max(1, reg(l).length);
+      engine.setResearchOverlay({ kind: "difference", visible: { tp: true, fp: true, fn: true } });
+      const d = shot();
+      const shares = [
+        exact(d, 1, DIFFERENCE_PALETTE.tp),
+        exact(d, 255, DIFFERENCE_PALETTE.tp),
+        exact(d, 2, DIFFERENCE_PALETTE.fp),
+        exact(d, 3, DIFFERENCE_PALETTE.fn),
+      ];
+      add(
+        "p7b_difference",
+        "7-B 차이 지도 2D: TP #009E73 · FP #E69F00 · FN #56B4E9 정확, 배경 투명",
+        shares.every((v) => v === 1) && changedPixels(off, d).length === aiPix.length,
+        `exact TP/TP(255)/FP/FN=${shares.map((v) => v.toFixed(3)).join("/")} changed=${changedPixels(off, d).length}/${aiPix.length}`,
+      );
+      engine.setResearchOverlay({ kind: "difference", visible: { tp: true, fp: false, fn: true } });
+      const noFp = shot();
+      const fpLeft = changedPixels(off, noFp).filter((p) => reg(2).includes(p)).length;
+      add(
+        "p7b_toggle",
+        "7-B 클래스 끄기: FP만 숨김 (TP·FN 유지)",
+        fpLeft === 0 &&
+          exact(noFp, 1, DIFFERENCE_PALETTE.tp) === 1 &&
+          exact(noFp, 3, DIFFERENCE_PALETTE.fn) === 1,
+        `FP pixels still coloured=${fpLeft}`,
+      );
+      engine.setResearchOverlay({ kind: "ground_truth" });
+      const gt = shot();
+      const gtFp = changedPixels(off, gt).filter((p) => reg(2).includes(p)).length;
+      add(
+        "p7b_gt",
+        "7-B Ground Truth 표시: TP + FN = #CC79A7, AI만(FP) 영역은 표시 안 함",
+        exact(gt, 1, GT_ONLY_COLOR) === 1 && exact(gt, 3, GT_ONLY_COLOR) === 1 && gtFp === 0,
+        `TP/FN pink=${exact(gt, 1, GT_ONLY_COLOR).toFixed(3)}/${exact(gt, 3, GT_ONLY_COLOR).toFixed(3)} FP coloured=${gtFp}`,
+      );
+      engine.setBase("adc");
+      const gtAdc = shot();
+      engine.setBase("dwi");
+      add(
+        "p7b_base_switch",
+        "7-B DWI→ADC 전환 후에도 같은 overlay (drawing source 유지)",
+        exact(gtAdc, 1, GT_ONLY_COLOR) === 1 && exact(gtAdc, 3, GT_ONLY_COLOR) === 1,
+        `pink after switch=${exact(gtAdc, 1, GT_ONLY_COLOR).toFixed(3)}`,
+      );
+      engine.setResearchOverlay(null);
+      const back = shot();
+      add(
+        "p7b_back_to_ai",
+        "7-B AI 표시 복귀: 예측 labelmap과 영역별 색으로 되돌아감 (초기 화면과 동일)",
+        changedPixels(ai, back).length === 0,
+        `diff=${changedPixels(ai, back).length}`,
+      );
+      engine.setResearchOverlay({ kind: "difference", visible: { tp: true, fp: true, fn: true } });
+      engine.setView("render");
+      engine.setRender3DBackground(false);
+      engine.setCameraPreset("front");
+      const off3 = shot(false);
+      const nearest: string[] = [];
+      for (const [key, hex] of Object.entries(DIFFERENCE_PALETTE)) {
+        const only = {
+          tp: key === "tp",
+          fp: key === "fp",
+          fn: key === "fn",
+        };
+        engine.setResearchOverlay({ kind: "difference", visible: only });
+        const img = shot();
+        const r = changedPixels(off3, img);
+        const c = chroma(meanRgb(img, r));
+        const dist = (h: string) => {
+          const q = chroma(hexToRgb(h));
+          return Math.hypot(c[0] - q[0], c[1] - q[1], c[2] - q[2]);
+        };
+        const best = Object.entries(DIFFERENCE_PALETTE).sort(
+          (a, b) => dist(a[1]) - dist(b[1]),
+        )[0]?.[0];
+        nearest.push(`${key}->${best}(${r.length})`);
+        void hex;
+      }
+      add(
+        "p7b_3d",
+        "7-B 3D: TP/FP/FN 각각 자기 색으로 구분",
+        nearest.every(
+          (n) => n.split("->")[0] === n.split("->")[1]?.split("(")[0] && !n.endsWith("(0)"),
+        ),
+        nearest.join(" "),
+      );
+      engine.setView("axial");
+      let threw = false;
+      try {
+        engine.setResearchOverlay({ kind: "bogus" } as never);
+      } catch {
+        threw = true;
+      }
+      add("p7b_guard", "7-B 잘못된 overlay 값 거부", threw, `threw=${threw}`);
+    } finally {
+      engine.dispose();
+    }
+  }, "research");
 
   // --- 3. oblique affine ---------------------------------------------------------------------
   for (const o of [builtinOblique(), ...(extraOblique ? [extraOblique] : [])]) {
