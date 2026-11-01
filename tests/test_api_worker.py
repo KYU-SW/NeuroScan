@@ -77,6 +77,7 @@ def test_run_lifecycle_with_worker(client, case_id):
         }
     assert set(roles) == {
         "prediction_mask",
+        "prediction_components",
         "quantification_json",
         "manifest_json",
         "metadata_json",
@@ -84,6 +85,7 @@ def test_run_lifecycle_with_worker(client, case_id):
         "input_adc_deid",
     }
     assert roles["prediction_mask"].shareable and not roles["input_dwi_deid"].shareable
+    assert roles["prediction_components"].shareable == roles["prediction_mask"].shareable
     assert all(f.servable for f in roles.values())
 
 

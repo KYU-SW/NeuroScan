@@ -18,7 +18,7 @@ export function handleViewerKey(
   key: string,
   state: ViewerState,
   engine: ViewerEngine | null,
-  lesionCenter: [number, number, number] | null,
+  lesionVoxel: [number, number, number] | null,
 ): boolean {
   const view = VIEW_KEYS[key];
   if (view) {
@@ -50,7 +50,7 @@ export function handleViewerKey(
       return true;
   }
   if (!engine) return false;
-  const handled = engineKey(key, state, engine, lesionCenter);
+  const handled = engineKey(key, state, engine, lesionVoxel);
   if (handled) state.bumpTick();
   return handled;
 }
@@ -59,7 +59,7 @@ function engineKey(
   key: string,
   state: ViewerState,
   engine: ViewerEngine,
-  lesionCenter: [number, number, number] | null,
+  lesionVoxel: [number, number, number] | null,
 ): boolean {
   switch (key) {
     case "ArrowUp":
@@ -82,8 +82,9 @@ function engineKey(
       return true;
     case "l":
     case "L":
-      if (lesionCenter) engine.jumpToWorldMm(lesionCenter);
-      return lesionCenter !== null;
+      // voxel-based (true affine); see ResultViewerPage
+      if (lesionVoxel) engine.jumpToVoxel(lesionVoxel);
+      return lesionVoxel !== null;
   }
   return false;
 }

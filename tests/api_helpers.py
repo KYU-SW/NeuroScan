@@ -143,6 +143,7 @@ class FakeEngine:
             (run_dir / "logs").mkdir()
             contents = {
                 "prediction_mask.nii.gz": b"mask",
+                "prediction_components.nii.gz": b"components",
                 "inputs/dwi.nii.gz": b"dwi",
                 "inputs/adc.nii.gz": b"adc",
                 "quantification.json": b"{}",

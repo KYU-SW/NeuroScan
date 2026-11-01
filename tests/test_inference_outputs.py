@@ -22,6 +22,7 @@ PHI_TEXT = "PATIENT^NAME 19700101"
 NAMES = ("Hong_Gildong_DWI.nii.gz", "Hong_Gildong_ADC.nii.gz")
 EXPECTED_FILES = {
     "prediction_mask.nii.gz",
+    "prediction_components.nii.gz",
     "quantification.json",
     "inference_metadata.json",
     "manifest.json",
@@ -126,7 +127,15 @@ def test_manifest_is_relative_and_inputs_not_shared_by_default(tmp_path):
     for v in m["volumes"]:
         assert not schemas.is_absolute_path_text(v["uri"]) and (run_dir / v["uri"]).is_file()
         assert v["mime_type"] == "application/gzip" and len(v["affine"]) == 4
-    assert {v["id"] for v in m["volumes"]} == {"dwi", "adc", "prediction_mask"}
+    assert {v["id"] for v in m["volumes"]} == {
+        "dwi",
+        "adc",
+        "prediction_mask",
+        "prediction_components",
+    }
+    comp = next(v for v in m["volumes"] if v["id"] == "prediction_components")
+    assert comp["kind"] == "derived_review_labelmap" and comp["derived_from"] == "prediction_mask"
+    assert "prediction_components.nii.gz" in m["sharing"]["shareable_by_default"]
     assert "inputs/" in m["sharing"]["not_shareable_by_default"]
     assert all(not s.startswith("inputs") for s in m["sharing"]["shareable_by_default"])
     assert m["views"]["axial"]["array_axis"] == 2  # LAS input: axis 2 points superior
@@ -149,7 +158,7 @@ def test_export_inputs_can_be_disabled(tmp_path):
     run_dir = tmp_path / "out" / r.case_id / r.run_id
     assert not (run_dir / "inputs").exists()
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert [v["id"] for v in manifest["volumes"]] == ["prediction_mask"]
+    assert [v["id"] for v in manifest["volumes"]] == ["prediction_mask", "prediction_components"]
     assert manifest["inputs_exported"] is False
 
 

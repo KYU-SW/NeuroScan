@@ -37,15 +37,22 @@ export const LESION_CENTER_MM = voxToWorld(
 
 type Kind = "float32" | "uint8";
 
-function niftiBytes(data: Float32Array | Uint8Array, kind: Kind): ArrayBuffer {
+/** NIfTI-1 bytes for any 3-D grid and sform (spacing = column norms of the affine). */
+export function niftiFromArray(
+  data: Float32Array | Uint8Array,
+  kind: Kind,
+  dims3: readonly number[],
+  affine: readonly (readonly number[])[],
+): ArrayBuffer {
   const header = new ArrayBuffer(352);
   const v = new DataView(header);
   v.setInt32(0, 348, true);
-  const dims = [3, DIMS[0], DIMS[1], DIMS[2], 1, 1, 1, 1];
+  const dims = [3, dims3[0] ?? 1, dims3[1] ?? 1, dims3[2] ?? 1, 1, 1, 1, 1];
   dims.forEach((d, n) => v.setInt16(40 + 2 * n, d, true));
   v.setInt16(70, kind === "float32" ? 16 : 2, true); // datatype
   v.setInt16(72, kind === "float32" ? 32 : 8, true); // bitpix
-  const pixdim = [1, SPACING[0], SPACING[1], SPACING[2], 1, 1, 1, 1];
+  const col = (c: number) => Math.hypot(...[0, 1, 2].map((r) => affine[r]?.[c] ?? 0));
+  const pixdim = [1, col(0), col(1), col(2), 1, 1, 1, 1];
   pixdim.forEach((p, n) => v.setFloat32(76 + 4 * n, p, true));
   v.setFloat32(108, 352, true); // vox_offset
   v.setFloat32(112, 1, true); // scl_slope
@@ -53,7 +60,7 @@ function niftiBytes(data: Float32Array | Uint8Array, kind: Kind): ArrayBuffer {
   v.setInt16(252, 0, true); // qform_code
   v.setInt16(254, 1, true); // sform_code
   for (let r = 0; r < 3; r++) {
-    const row = AFFINE[r] ?? [];
+    const row = affine[r] ?? [];
     for (let c = 0; c < 4; c++) v.setFloat32(280 + 16 * r + 4 * c, row[c] ?? 0, true);
   }
   [0x6e, 0x2b, 0x31, 0x00].forEach((b, n) => v.setUint8(344 + n, b)); // "n+1\0"
@@ -63,7 +70,11 @@ function niftiBytes(data: Float32Array | Uint8Array, kind: Kind): ArrayBuffer {
   return out.buffer;
 }
 
-async function gzip(buf: ArrayBuffer): Promise<ArrayBuffer> {
+function niftiBytes(data: Float32Array | Uint8Array, kind: Kind): ArrayBuffer {
+  return niftiFromArray(data, kind, DIMS, AFFINE);
+}
+
+export async function gzip(buf: ArrayBuffer): Promise<ArrayBuffer> {
   const stream = new Blob([buf]).stream().pipeThrough(new CompressionStream("gzip"));
   return new Response(stream).arrayBuffer();
 }

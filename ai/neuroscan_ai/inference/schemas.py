@@ -97,7 +97,14 @@ FORBIDDEN_PHRASES = (
     "pca",
 )
 STANDARD_FILE_NAMES = frozenset(
-    {"dwi.nii.gz", "adc.nii.gz", "dwi.nii", "adc.nii", "prediction_mask.nii.gz"}
+    {
+        "dwi.nii.gz",
+        "adc.nii.gz",
+        "dwi.nii",
+        "adc.nii",
+        "prediction_mask.nii.gz",
+        "prediction_components.nii.gz",
+    }
 )
 _DRIVE = re.compile(r"(?<![A-Za-z])[A-Za-z]:[\\/]")
 

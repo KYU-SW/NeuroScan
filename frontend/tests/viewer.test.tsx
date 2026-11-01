@@ -55,12 +55,13 @@ beforeEach(() => useViewerStore.getState().reset());
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Result viewer", () => {
-  it("loads only the three API volume URLs (verified) and drives the engine", async () => {
+  it("loads only the API volume URLs (DWI, ADC, mask, component labelmap; verified)", async () => {
     const { calls } = await serve(result());
     const { engines } = renderApp(`/runs/${RUN}/viewer`);
     const engine = await loadedEngine(engines);
     const fileCalls = calls.filter((c) => c.includes("/files/"));
-    expect(fileCalls).toHaveLength(3);
+    expect(fileCalls).toHaveLength(4);
+    expect(engine.loaded?.components).toBeInstanceOf(ArrayBuffer);
     expect(calls.every((c) => / \/api\/v1\//.test(c))).toBe(true);
     expect(engine.called("setBase").at(-1)).toEqual(["dwi"]);
     expect(engine.called("setMaskColor").at(-1)).toEqual(["orange"]);
@@ -110,12 +111,13 @@ describe("Result viewer", () => {
     const user = userEvent.setup();
     const { engines } = renderApp(`/runs/${RUN}/viewer`);
     const engine = await loadedEngine(engines);
-    // opened on the lesion centre automatically, then the button jumps there again
-    expect(engine.called("jumpToWorldMm")[0]).toEqual([[-20, 0, 10]]);
+    // opened on the lesion centre automatically (API centre-of-mass voxel), then the button
+    // jumps there again; navigation is voxel-based (never NiiVue's world-mm approximation)
+    expect(engine.called("jumpToVoxel")[0]).toEqual([[65, 55, 30]]);
     await user.click(screen.getByRole("button", { name: "병변 중심으로 이동" }));
-    expect(engine.called("jumpToWorldMm").at(-1)).toEqual([[-20, 0, 10]]);
-    await user.click(screen.getAllByRole("button", { name: "위치로 이동" })[0] ?? document.body);
-    expect(engine.called("jumpToWorldMm").at(-1)).toEqual([[-10, 0, 10]]);
+    expect(engine.called("jumpToVoxel").at(-1)).toEqual([[65, 55, 30]]);
+    await user.click(screen.getByRole("button", { name: "영역 1 선택 및 위치로 이동" }));
+    expect(engine.called("jumpToVoxel").at(-1)).toEqual([[60, 50, 30]]); // representative voxel
     const viewer = screen.getByRole("region", { name: /영상 Viewer/ });
     viewer.focus();
     await user.keyboard("{ArrowUp}{ArrowDown}2m]a+0l");
@@ -130,7 +132,8 @@ describe("Result viewer", () => {
     expect(s.base).toBe("adc");
     expect(engine.called("zoomBy")).toEqual([[1.25]]);
     expect(engine.called("resetView")).toHaveLength(1);
-    expect(engine.called("jumpToWorldMm")).toHaveLength(4);
+    expect(engine.called("jumpToVoxel")).toHaveLength(4);
+    expect(engine.called("jumpToWorldMm")).toHaveLength(0);
   });
 
   it("shows radiological orientation with a neurological switch", async () => {
@@ -211,6 +214,7 @@ describe("Result panel wording", () => {
     ).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "병변 중심으로 이동" })).toBeDisabled();
     expect(engines[0]?.called("jumpToWorldMm")).toEqual([]); // nothing to centre on
+    expect(engines[0]?.called("jumpToVoxel")).toEqual([]);
     await user.click(screen.getByRole("radio", { name: "3D" }));
     expect(screen.getAllByText(/3D로 표시할 내용이 없습니다/).length).toBeGreaterThan(0);
   });
@@ -221,7 +225,7 @@ describe("Result panel wording", () => {
     const { engines } = renderApp(`/runs/${RUN}/viewer`);
     await loadedEngine(engines);
     expect(await screen.findByText("상위 100개만 표시됩니다.")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "위치로 이동" }).length).toBeLessThanOrEqual(10);
+    expect(screen.getAllByRole("button", { name: /선택 및 위치로 이동/ }).length).toBe(10);
     await user.click(screen.getByRole("button", { name: "더 보기" }));
     expect(screen.getAllByText(/mL ·/).length).toBe(100);
     expect(screen.getByText(/split into many separate parts/)).toBeInTheDocument();

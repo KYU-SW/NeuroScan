@@ -15,6 +15,7 @@ export function LocationProbe() {
 
 export interface Harness {
   engines: FakeViewerEngine[];
+  unmount: () => void;
 }
 
 /** Render the app routes at `path` with a fresh QueryClient, fake viewer engine and WebGL flag. */
@@ -46,8 +47,8 @@ export function renderApp(path: string, opts: { webgl?: boolean } = {}): Harness
       </EngineProvider>
     </QueryClientProvider>
   );
-  render(ui);
-  return { engines };
+  const { unmount } = render(ui);
+  return { engines, unmount };
 }
 
 type Handler = (url: string, init: RequestInit | undefined) => Response | Promise<Response>;

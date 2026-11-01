@@ -4,6 +4,8 @@
  *
  * Coordinates are RAS+ world millimetres, the same space as the API's *_world_mm fields.
  */
+import type { ComponentDisplay } from "./labelLut";
+import type { CrosshairLocation } from "./location";
 
 export type BaseKind = "dwi" | "adc";
 export type ViewKind = "axial" | "coronal" | "sagittal" | "multiplanar" | "render";
@@ -17,6 +19,9 @@ export interface VolumeBuffers {
   adc: ArrayBuffer;
   /** Binary prediction mask (uint8 0/1) on the DWI grid. */
   mask: ArrayBuffer;
+  /** Phase 7-A: component display labelmap (uint8, same grid and foreground as the mask). When
+   * present it is shown instead of the mask; the mask itself is never modified. */
+  components?: ArrayBuffer;
 }
 
 export interface IntensityWindow {
@@ -87,6 +92,18 @@ export interface ViewerEngine {
   /** 2D zoom/pan back to fit and the 3D camera back to the default (front) preset. */
   resetView(): void;
   dispose(): void;
+
+  // --- Phase 7-0 (additive; Phase 6 screens do not call these) -------------------------------
+  /** Show the loaded mask as a component labelmap (per-label colour/alpha); null = Phase 6
+   * single-colour mask. Display only: the labelmap itself is never changed. */
+  setComponentDisplay(display: ComponentDisplay | null): void;
+  /** Crosshair changes (mouse, keys or commands), already normalised; returns an unsubscribe. */
+  onLocationChange(listener: (location: CrosshairLocation) => void): () => void;
+  getCrosshair(): CrosshairLocation;
+  /** Move the crosshair to an integer voxel of the base volume's file grid. */
+  jumpToVoxel(vox: [number, number, number]): void;
+  /** Set one slider: integer slice index along an anatomical axis of the display grid. */
+  setSliceVoxel(axis: SliceAxis, index: number): void;
 }
 
 export function hexToRgb(hex: string): [number, number, number] {

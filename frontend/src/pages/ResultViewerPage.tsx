@@ -7,6 +7,7 @@ import { api } from "../api/endpoints";
 import { errorMessage } from "../api/errors";
 import { type RunResult, UUID_ID } from "../api/schemas";
 import { Layout } from "../components/Layout";
+import { lesionCenterVoxel } from "../features/components/reviewModel";
 import { ResultPanel } from "../features/results/ResultPanel";
 import { useEngineEnvironment } from "../features/viewer/engineContext";
 import { handleViewerKey } from "../features/viewer/keyboard";
@@ -63,19 +64,20 @@ function ResultLayout({ result }: { result: RunResult }) {
     coronal: views.coronal?.count ?? 1,
     sagittal: views.sagittal?.count ?? 1,
   };
-  const c = result.location.center_of_mass_world_mm;
-  const lesionCenter: [number, number, number] | null = c
-    ? [c[0] ?? 0, c[1] ?? 0, c[2] ?? 0]
-    : null;
   const mask = result.viewer.volumes.find((v) => v.id === "prediction_mask");
-  const [cx, cy, cz] = lesionCenter ?? [Number.NaN, Number.NaN, Number.NaN];
-  // when the model marked a region, open the viewer on its centre slice (API centre of mass)
+  const base = result.viewer.volumes.find((v) => v.id === "dwi");
+  const labelmapAvailable = result.viewer.volumes.some((v) => v.id === "prediction_components");
+  // Lesion centre as a file-grid voxel (API centre of mass). Navigation goes through voxels:
+  // NiiVue's world-mm conversion is an axis-aligned approximation that misses on oblique images.
+  const lesionVoxel = lesionCenterVoxel(result.location.center_of_mass_voxel, base);
+  const [lx, ly, lz] = lesionVoxel ?? [-1, -1, -1];
+  // when the model marked a region, open the viewer on its centre slice
   const onEngine = useCallback(
     (e: ViewerEngine | null) => {
-      if (e && Number.isFinite(cx)) e.jumpToWorldMm([cx, cy, cz]);
+      if (e && lx >= 0) e.jumpToVoxel([lx, ly, lz]);
       setEngine(e);
     },
-    [cx, cy, cz],
+    [lx, ly, lz],
   );
   const onError = useCallback((m: string) => setViewerError(m), []);
   const description = ko.viewer.canvasLabel(
@@ -86,7 +88,7 @@ function ResultLayout({ result }: { result: RunResult }) {
   );
 
   function onKey(e: KeyboardEvent<HTMLDivElement>) {
-    if (handleViewerKey(e.key, state, engine, lesionCenter)) e.preventDefault();
+    if (handleViewerKey(e.key, state, engine, lesionVoxel)) e.preventDefault();
   }
 
   let center;
@@ -132,7 +134,8 @@ function ResultLayout({ result }: { result: RunResult }) {
         <ViewerControls
           engine={engine}
           sliceCounts={sliceCounts}
-          lesionCenter={lesionCenter}
+          lesionVoxel={lesionVoxel}
+          labelmapAvailable={labelmapAvailable}
           emptyMask={result.viewer.render_3d.empty_mask}
         />
         {mask?.shareable && isApiFileUrl(mask.url) && (
@@ -156,7 +159,7 @@ function ResultLayout({ result }: { result: RunResult }) {
         )}
       </section>
       <aside className="right">
-        <ResultPanel result={result} onJump={engine ? (mm) => engine.jumpToWorldMm(mm) : null} />
+        <ResultPanel result={result} engine={engine} labelmapAvailable={labelmapAvailable} />
       </aside>
     </div>
   );

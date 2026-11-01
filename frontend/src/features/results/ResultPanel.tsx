@@ -3,30 +3,22 @@
  * the medical-safety rules: "model-marked lesion region", hemisphere marked as estimated, scores
  * uncalibrated and never shown as percentages, no vascular territory names.
  */
-import { useState } from "react";
-
 import type { RunResult } from "../../api/schemas";
 import { ko } from "../../i18n/ko";
+import { ComponentReview } from "../components/ComponentReview";
+import type { ViewerEngine } from "../viewer/ViewerEngine";
 
 const fmt = (v: number, d = 2) => v.toFixed(d);
 const fmtVec = (v: number[] | null) => (v ? v.map((x) => x.toFixed(1)).join(", ") : "—");
-const SIDE: Record<string, string> = {
-  left: ko.result.left,
-  right: ko.result.right,
-  midline: ko.result.midline,
-  not_available: ko.result.notAvailable,
-};
-
 interface Props {
   result: RunResult;
-  onJump: ((mm: [number, number, number]) => void) | null;
+  engine: ViewerEngine | null;
+  labelmapAvailable: boolean;
 }
 
-export function ResultPanel({ result, onJump }: Props) {
+export function ResultPanel({ result, engine, labelmapAvailable }: Props) {
   const { lesion, location, research_score_summary: scores } = result;
   const h = location.hemisphere;
-  const [showAll, setShowAll] = useState(false);
-  const comps = showAll ? result.components : result.components.slice(0, 10);
 
   return (
     <section className="result-panel" aria-labelledby="result-title">
@@ -116,38 +108,7 @@ export function ResultPanel({ result, onJump }: Props) {
       </details>
 
       {result.components.length > 0 && (
-        <details className="card" open>
-          <summary>
-            {ko.result.components} ({result.components.length})
-          </summary>
-          {result.components_truncated && <p className="note">{ko.result.truncated}</p>}
-          <ol className="components">
-            {comps.map((c) => (
-              <li key={c.label}>
-                {fmt(c.volume_ml)} mL · {SIDE[c.hemisphere_estimate] ?? c.hemisphere_estimate}
-                {onJump && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onJump([
-                        c.centroid_world_mm[0] ?? 0,
-                        c.centroid_world_mm[1] ?? 0,
-                        c.centroid_world_mm[2] ?? 0,
-                      ])
-                    }
-                  >
-                    {ko.result.go}
-                  </button>
-                )}
-              </li>
-            ))}
-          </ol>
-          {!showAll && result.components.length > 10 && (
-            <button type="button" onClick={() => setShowAll(true)}>
-              {ko.result.more}
-            </button>
-          )}
-        </details>
+        <ComponentReview result={result} engine={engine} labelmapAvailable={labelmapAvailable} />
       )}
 
       <details className="card scores">

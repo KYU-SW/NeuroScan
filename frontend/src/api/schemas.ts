@@ -121,9 +121,33 @@ export const runStatusSchema = z.strictObject({
 });
 
 const vec3 = z.array(z.number()).length(3);
+const voxel3 = z.array(z.number().int().nonnegative()).length(3);
+
+/** Phase 7-A fields are additive and null for results made before the component labelmap. */
+export const componentSchema = z.strictObject({
+  label: z.number().int(),
+  voxel_count: z.number().int(),
+  volume_ml: z.number(),
+  centroid_voxel: vec3,
+  centroid_world_mm: vec3,
+  bbox_min_voxel: z.array(z.number().int()).length(3),
+  bbox_max_voxel: z.array(z.number().int()).length(3),
+  hemisphere_estimate: z.string(),
+  display_label: z.number().int().min(1).max(255).nullable(),
+  size_rank: z.number().int().min(1).nullable(),
+  representative_voxel: voxel3.nullable(),
+  representative_world_mm: vec3.nullable(),
+  slice_range: z
+    .strictObject({
+      axis: z.number().int().min(0).max(2),
+      first: z.number().int().nonnegative(),
+      last: z.number().int().nonnegative(),
+    })
+    .nullable(),
+});
 
 export const viewerVolumeSchema = z.strictObject({
-  id: z.enum(["dwi", "adc", "prediction_mask"]),
+  id: z.enum(["dwi", "adc", "prediction_mask", "prediction_components"]),
   role: z.string(),
   file_id: uuid,
   url: z.string().regex(FILE_URL),
@@ -174,18 +198,7 @@ export const runResultSchema = z.strictObject({
       caveat: z.string(),
     }),
   }),
-  components: z.array(
-    z.strictObject({
-      label: z.number().int(),
-      voxel_count: z.number().int(),
-      volume_ml: z.number(),
-      centroid_voxel: vec3,
-      centroid_world_mm: vec3,
-      bbox_min_voxel: z.array(z.number().int()).length(3),
-      bbox_max_voxel: z.array(z.number().int()).length(3),
-      hemisphere_estimate: z.string(),
-    }),
-  ),
+  components: z.array(componentSchema),
   components_truncated: z.boolean(),
   research_score_summary: z.strictObject({
     kind: z.string(),
@@ -233,4 +246,5 @@ export type RunCreate = z.infer<typeof runCreateSchema>;
 export type RunStatus = z.infer<typeof runStatusSchema>;
 export type RunResult = z.infer<typeof runResultSchema>;
 export type ViewerVolume = z.infer<typeof viewerVolumeSchema>;
+export type ResultComponent = z.infer<typeof componentSchema>;
 export type ErrorResponse = z.infer<typeof errorResponseSchema>;

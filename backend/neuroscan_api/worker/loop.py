@@ -49,6 +49,8 @@ STAGE_AFTER = {
 # engine output (run-relative) -> (role, mime type, servable, shareable)
 OUTPUT_ROLES = {
     "prediction_mask.nii.gz": ("prediction_mask", "application/gzip", True, True),
+    # Phase 7-A: derived review labelmap; same serving/sharing policy as the mask
+    "prediction_components.nii.gz": ("prediction_components", "application/gzip", True, True),
     "quantification.json": ("quantification_json", "application/json", True, True),
     "manifest.json": ("manifest_json", "application/json", True, True),
     "inference_metadata.json": ("metadata_json", "application/json", True, True),

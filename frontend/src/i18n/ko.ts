@@ -222,6 +222,46 @@ export const ko = {
     } as Record<string, string>,
   },
 
+  components: {
+    title: "연결 영역 검토",
+    region: (rank: number) => `영역 ${rank}`,
+    dimNote:
+      "선택하지 않은 영역은 검토 편의를 위해 흐리게 표시됩니다. AI 원본 예측 결과는 변경되지 않습니다.",
+    dimMeaning: "흐린 표시는 모델 점수, 위험도 또는 의료적 판단을 뜻하지 않습니다.",
+    hideNote: "숨기기는 화면 표시에서만 제외합니다. 원본 예측 파일과 정량값은 그대로입니다.",
+    hiddenTag: "표시에서 숨김",
+    small: "작은 분리 영역",
+    smallHint:
+      "가장 큰 영역 부피의 10% 미만인 분리 영역입니다. 화면 정렬·표시용 구분일 뿐 의료적 의미는 없습니다.",
+    sort: "정렬",
+    sortLargest: "부피 큰 순",
+    sortSmallest: "부피 작은 순",
+    filter: "목록 보기",
+    filterAll: "전체",
+    filterSelected: "선택한 영역만",
+    filterVisible: "숨긴 영역 제외",
+    select: "선택",
+    selected: "선택됨",
+    selectLabel: (rank: number) => `영역 ${rank} 선택 및 위치로 이동`,
+    hide: "숨기기",
+    show: "다시 표시",
+    hideLabel: (rank: number) => `영역 ${rank} 표시에서 숨기기`,
+    showLabel: (rank: number) => `영역 ${rank} 다시 표시`,
+    clearSelection: "선택 해제",
+    showOnly: "선택 영역만 표시",
+    showAll: "전체 다시 표시",
+    noneSelected: "선택한 영역이 없습니다.",
+    slices: (first: number, last: number) =>
+      first === last ? `slice ${first}` : `slice ${first}–${last}`,
+    coloring: "영역 색",
+    coloringComponent: "영역별 색",
+    coloringSingle: "단색",
+    paletteNote: "단색 표시에서 아래 색이 사용됩니다.",
+    noLabelmap:
+      "이 결과에는 영역 구분 파일이 없어 영역별 색·강조·숨기기를 사용할 수 없습니다. (Phase 7 이전 결과)",
+    other: "기타(255번 이후 영역)",
+  },
+
   notFound: { title: "페이지를 찾을 수 없습니다.", home: "처음으로" },
 } as const;
 
@@ -236,4 +276,12 @@ export const FORBIDDEN_UI_PHRASES = [
   "MCA",
   "ACA",
   "PCA",
+  // Phase 7-A component review: no medical labels for (small) regions
+  "위양성",
+  "가짜 병변",
+  "위험 병변",
+  "확정 병변",
+  "의심 병변",
+  "악성",
+  "진단됨",
 ];

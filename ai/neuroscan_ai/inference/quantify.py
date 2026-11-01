@@ -22,6 +22,7 @@ from typing import Any
 import nibabel as nib
 import numpy as np
 
+from neuroscan_ai.analysis.components import component_analysis
 from neuroscan_ai.analysis.lesion import lesion_summary
 from neuroscan_ai.inference.errors import Code, Issue
 from neuroscan_ai.inference.predict import Prediction
@@ -149,14 +150,23 @@ def score_summary(prediction: Prediction, prepared: PreparedCase, cfg: dict[str,
 def quantify(
     prediction: Prediction, prepared: PreparedCase, inference_cfg: dict[str, Any], threshold: float
 ) -> tuple[dict[str, Any], list[Issue]]:
+    q, issues, _ = quantify_with_labelmap(prediction, prepared, inference_cfg, threshold)
+    return q, issues
+
+
+def quantify_with_labelmap(
+    prediction: Prediction, prepared: PreparedCase, inference_cfg: dict[str, Any], threshold: float
+) -> tuple[dict[str, Any], list[Issue], np.ndarray]:
+    """``quantify`` plus the uint8 component display labelmap (Phase 7-A) from the same single
+    component labelling, so labelmap labels and the JSON ``display_label`` always agree."""
     vol = prediction.binary_original
     mask = vol.data
     affine = vol.geometry.affine
     spacing = nifti.spacing_from_affine(affine)
     orient = nifti.orientation(affine)
     slice_axis = next(i for i, c in enumerate(orient) if c in "SI")
-    summary = lesion_summary(mask, spacing, affine, slice_axis=slice_axis)
-    comps = summary["components"]
+    summary = lesion_summary(mask, spacing, affine, slice_axis=slice_axis, with_components=False)
+    labelmap, comps = component_analysis(mask, spacing, affine, slice_axis)
     qcfg = inference_cfg["quantification"]
     hemi, comp_side = hemisphere_estimate(
         mask,
@@ -194,6 +204,11 @@ def quantify(
                 "centroid_voxel": [_r(v, 3) for v in c["centroid_voxel"]],
                 "centroid_world_mm": [_r(v, 4) for v in c["centroid_world_mm"]],
                 "hemisphere_estimate": comp_side[c["label"]],
+                "display_label": c["display_label"],
+                "size_rank": c["size_rank"],
+                "representative_voxel": c["representative_voxel"],
+                "representative_world_mm": [_r(v, 4) for v in c["representative_world_mm"]],
+                "slice_range": c["slice_range"],
             }
             for c in comps
         ],
@@ -237,4 +252,4 @@ def quantify(
             )
         )
     q["flags"] = [i.code.value for i in issues]
-    return q, issues
+    return q, issues, labelmap

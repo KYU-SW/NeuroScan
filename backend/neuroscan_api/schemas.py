@@ -147,6 +147,14 @@ class Hemisphere(Strict):
     caveat: str
 
 
+class SliceRange(Strict):
+    """Inclusive voxel index range along the image's slice (S/I) array axis."""
+
+    axis: int
+    first: int
+    last: int
+
+
 class Component(Strict):
     label: int
     voxel_count: int
@@ -156,6 +164,13 @@ class Component(Strict):
     bbox_min_voxel: list[int]
     bbox_max_voxel: list[int]
     hemisphere_estimate: str
+    # Phase 7-A (additive). display_label = value in the prediction_components labelmap
+    # (1..254 by size rank, 255 = other); representative_voxel lies inside the component.
+    display_label: int | None = None
+    size_rank: int | None = None
+    representative_voxel: list[int] | None = None
+    representative_world_mm: list[float] | None = None
+    slice_range: SliceRange | None = None
 
 
 class Lesion(Strict):

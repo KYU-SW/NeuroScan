@@ -57,9 +57,20 @@ export function runStatus(over: Partial<RunStatus> = {}): RunStatus {
   };
 }
 
-const volume = (id: "dwi" | "adc" | "prediction_mask", n: number, shareable: boolean) => ({
+type VolumeId = "dwi" | "adc" | "prediction_mask" | "prediction_components";
+const LABELS: Record<VolumeId, Record<string, string> | null> = {
+  dwi: null,
+  adc: null,
+  prediction_mask: { "0": "background", "1": "model-predicted lesion region" },
+  prediction_components: {
+    "0": "background",
+    "1-254": "component display label (size rank, largest = 1)",
+    "255": "other components (size rank above 254)",
+  },
+};
+const volume = (id: VolumeId, n: number, shareable: boolean) => ({
   id,
-  role: id === "prediction_mask" ? "label" : "image",
+  role: LABELS[id] ? "label" : "image",
   file_id: FILE(n),
   url: `/api/v1/files/${FILE(n)}`,
   mime_type: "application/gzip",
@@ -73,12 +84,14 @@ const volume = (id: "dwi" | "adc" | "prediction_mask", n: number, shareable: boo
     [0, 0, 0, 1],
   ],
   orientation: "LAS",
-  dtype: id === "prediction_mask" ? "uint8" : "float32",
+  dtype: LABELS[id] ? "uint8" : "float32",
   shareable,
-  labels:
-    id === "prediction_mask" ? { "0": "background", "1": "model-predicted lesion region" } : null,
-  same_grid_as: id === "prediction_mask" ? "dwi" : null,
+  labels: LABELS[id],
+  same_grid_as: LABELS[id] ? "dwi" : null,
 });
+
+/** 0086-like volumes (mL): one main region and eight small separate regions, total 48.976. */
+export const COMPONENT_ML = [48.5, 0.2, 0.1, 0.06, 0.04, 0.032, 0.02, 0.016, 0.008];
 
 export function result(over: Partial<RunResult> = {}): RunResult {
   return {
@@ -96,7 +109,7 @@ export function result(over: Partial<RunResult> = {}): RunResult {
       total_volume_ml: 48.976,
       voxel_count: 6122,
       component_count: 9,
-      largest_component_volume_ml: 45.2,
+      largest_component_volume_ml: 48.5,
       affected_slice_count: 21,
       prediction_threshold: 0.5,
       space: "original_dwi_grid",
@@ -121,15 +134,21 @@ export function result(over: Partial<RunResult> = {}): RunResult {
           "Estimated from the brain-mask midline in scanner (RAS+) coordinates; not registered to an atlas.",
       },
     },
-    components: Array.from({ length: 9 }, (_, i) => ({
-      label: i + 1,
-      voxel_count: 100 - i,
-      volume_ml: 5 - i * 0.1,
-      centroid_voxel: [60 + i, 50, 30],
-      centroid_world_mm: [-10 - i, 0, 10],
-      bbox_min_voxel: [60, 50, 30],
-      bbox_max_voxel: [61, 51, 31],
-      hemisphere_estimate: i % 2 ? "left" : "right",
+    components: COMPONENT_ML.map((ml, i) => ({
+      label: 9 - i, // scipy label order differs from the size rank
+      voxel_count: Math.round(ml / 0.008),
+      volume_ml: ml,
+      centroid_voxel: [60.5 + i, 50, 30],
+      centroid_world_mm: [-11 - 2 * i, -10, 10],
+      bbox_min_voxel: [60 + i, 49, 28 + i],
+      bbox_max_voxel: [61 + i, 51, 30 + i],
+      hemisphere_estimate:
+        i === 8 ? "not_available" : i === 7 ? "midline" : i % 2 ? "left" : "right",
+      display_label: i + 1,
+      size_rank: i + 1,
+      representative_voxel: [60 + i, 50, 30],
+      representative_world_mm: [-10 - 2 * i, -10, 10],
+      slice_range: { axis: 2, first: 28 + i, last: 30 + i },
     })),
     components_truncated: false,
     research_score_summary: {
@@ -158,6 +177,7 @@ export function result(over: Partial<RunResult> = {}): RunResult {
         volume("dwi", 1, false),
         volume("adc", 2, false),
         volume("prediction_mask", 3, true),
+        volume("prediction_components", 4, true),
       ],
       views: {
         sagittal: { array_axis: 0, count: 112, axis_increases_toward: "L" },
@@ -205,12 +225,37 @@ export function manyComponentsResult(): RunResult {
   if (!base) throw new Error("fixture needs a component");
   return {
     ...r,
-    components: Array.from({ length: 100 }, (_, i) => ({ ...base, label: i + 1 })),
+    components: Array.from({ length: 100 }, (_, i) => ({
+      ...base,
+      label: i + 1,
+      display_label: i + 1,
+      size_rank: i + 1,
+    })),
     components_truncated: true,
     lesion: { ...r.lesion, component_count: 120 },
     warnings: [
       { code: "W_MANY_COMPONENTS", message: "Predicted region is split into many separate parts." },
       { code: "W_LARGE_LESION", message: "Predicted region is unusually large." },
     ],
+  };
+}
+
+/** A result produced before Phase 7-A: no component labelmap, no new component fields. */
+export function legacyResult(): RunResult {
+  const r = result();
+  return {
+    ...r,
+    components: r.components.map((c) => ({
+      ...c,
+      display_label: null,
+      size_rank: null,
+      representative_voxel: null,
+      representative_world_mm: null,
+      slice_range: null,
+    })),
+    viewer: {
+      ...r.viewer,
+      volumes: r.viewer.volumes.filter((v) => v.id !== "prediction_components"),
+    },
   };
 }

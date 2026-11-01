@@ -4,6 +4,7 @@ mapping, file_id downloads, storage confinement, privacy and CLI equivalence."""
 from __future__ import annotations
 
 import gzip
+import hashlib
 import io
 import json
 import os
@@ -74,7 +75,17 @@ def test_result_is_an_explicit_safe_mapping(env):
     assert res["location"]["hemisphere"]["estimated"] is True
     assert res["research_score_summary"]["calibrated"] is False
     assert res["vascular_territory"] is None and res["disclaimer"]["en"]
-    assert {v["id"] for v in res["viewer"]["volumes"]} == {"dwi", "adc", "prediction_mask"}
+    assert {v["id"] for v in res["viewer"]["volumes"]} == {
+        "dwi",
+        "adc",
+        "prediction_mask",
+        "prediction_components",
+    }
+    # Phase 7-A component fields (additive) are present for runs that produced the labelmap
+    for c in res["components"]:
+        assert c["display_label"] == c["size_rank"] and 1 <= c["display_label"] <= 254
+        assert len(c["representative_voxel"]) == 3 and len(c["representative_world_mm"]) == 3
+        assert c["slice_range"]["first"] <= c["slice_range"]["last"]
     for v in res["viewer"]["volumes"]:
         assert v["url"] == f"{API}/files/{v['file_id']}" and "uri" not in v
     assert violations(res, extra_strings=[*PHI_NAMES, "Hong_Gildong", PHI_TEXT]) == []
@@ -102,6 +113,18 @@ def test_deidentified_inputs_and_mask_are_downloadable(env):
     assert data.dtype == np.uint8 and set(np.unique(data).tolist()) <= {0, 1}
     assert data.shape == nib.load(env["dwi"]).shape
     np.testing.assert_allclose(mask.affine, nib.load(env["dwi"]).affine, atol=1e-5)
+    # Phase 7-A: the component labelmap is served like the mask and matches it voxel for voxel
+    lr = c.get(vols["prediction_components"]["url"])
+    assert lr.status_code == 200 and lr.headers["content-type"] == "application/gzip"
+    assert 'filename="prediction_components.nii.gz"' in lr.headers["content-disposition"]
+    assert hashlib.sha256(lr.content).hexdigest() == vols["prediction_components"]["sha256"]
+    lab_img = nib.Nifti1Image.from_bytes(gzip.decompress(lr.content))
+    lab = np.asanyarray(lab_img.dataobj)
+    assert lab.dtype == np.uint8 and np.array_equal(lab > 0, data > 0)
+    np.testing.assert_allclose(lab_img.affine, mask.affine, atol=1e-6)
+    res = c.get(f"{API}/runs/{rid}/result").json()
+    for comp in res["components"]:
+        assert int((lab == comp["display_label"]).sum()) == comp["voxel_count"]
 
 
 def test_raw_uploads_logs_and_unknown_ids_are_not_served(env):

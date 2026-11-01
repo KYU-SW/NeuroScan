@@ -2,11 +2,14 @@
  * Hosts the viewer engine. The canvas is created inside the effect and removed on cleanup, so a
  * React StrictMode remount never reuses a canvas whose WebGL context was already released.
  * Store changes are pushed to the engine; the engine is disposed on unmount.
+ * Crosshair (Phase 7-A): engine location events flow into the store through connectCrosshair
+ * (frame-batched, same-voxel updates dropped); the store never moves the engine's crosshair.
  */
 import { useEffect, useRef, useState } from "react";
 
 import { ko } from "../../i18n/ko";
 import { useEngineEnvironment } from "./engineContext";
+import { connectCrosshair } from "./location";
 import { useViewerStore } from "./viewerStore";
 import type { ViewerEngine, VolumeBuffers } from "./ViewerEngine";
 
@@ -66,6 +69,33 @@ export function ViewerCanvas({ buffers, description, onEngine, onError }: Props)
     engine.setMaskOpacity(state.maskOpacity);
     engine.setMaskVisible(state.maskVisible);
   }, [engine, state.maskColor, state.maskOpacity, state.maskVisible]);
+  const hasLabelmap = buffers.components !== undefined;
+  useEffect(() => {
+    if (!engine) return;
+    // component colours / selection / hiding need the labelmap; without it (results made
+    // before Phase 7-A) the mask keeps the Phase 6 single-colour display
+    engine.setComponentDisplay(
+      hasLabelmap
+        ? {
+            selected: state.selectedComponent,
+            hidden: state.hiddenComponents,
+            coloring: state.componentColoring,
+          }
+        : null,
+    );
+  }, [
+    engine,
+    hasLabelmap,
+    state.selectedComponent,
+    state.hiddenComponents,
+    state.componentColoring,
+  ]);
+  useEffect(() => {
+    if (!engine) return;
+    const setCrosshair = useViewerStore.getState().setCrosshair;
+    setCrosshair(engine.getCrosshair());
+    return connectCrosshair(engine, setCrosshair); // unsubscribes on unmount / engine change
+  }, [engine]);
   useEffect(() => {
     if (!engine) return;
     engine.setRadiological(state.radiological);

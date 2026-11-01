@@ -12,6 +12,7 @@ raising for expected failures. Order:
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import logging
 import re
 import subprocess
@@ -30,13 +31,14 @@ import torch
 import yaml
 
 import neuroscan_ai
+from neuroscan_ai.analysis.components import check_labelmap
 from neuroscan_ai.inference import schemas
 from neuroscan_ai.inference.errors import EXIT_CODES, Code, InferenceError, Issue
 from neuroscan_ai.inference.model_loader import LoadedModel, load_inference_model, resolve_device
 from neuroscan_ai.inference.outputs import RunDirectory, new_run_id, sha256_path
 from neuroscan_ai.inference.predict import predict
 from neuroscan_ai.inference.preprocess import load_preprocess_config, prepare_case
-from neuroscan_ai.inference.quantify import quantify
+from neuroscan_ai.inference.quantify import quantify_with_labelmap
 from neuroscan_ai.inference.sealed_guard import check_not_sealed
 from neuroscan_ai.inference.validation import raise_first_error, validate_inputs
 from neuroscan_ai.io import nifti
@@ -60,6 +62,7 @@ INTENDED_USE = {
 }
 SHAREABLE = [
     "prediction_mask.nii.gz",
+    "prediction_components.nii.gz",
     "quantification.json",
     "inference_metadata.json",
     "manifest.json",
@@ -410,7 +413,10 @@ def run_independent_inference(
         meta["device"]["used"] = prediction.device
         t = stage("predict_restore", 0.7, t)
 
-        quant, q_issues = quantify(prediction, prepared, inf_cfg, threshold)
+        mask_digest = hashlib.sha256(prediction.binary_original.data.tobytes()).hexdigest()
+        quant, q_issues, components_map = quantify_with_labelmap(
+            prediction, prepared, inf_cfg, threshold
+        )
         warnings.extend(q_issues)
         quant = {
             "schema_version": schemas.QUANTIFICATION_SCHEMA,
@@ -424,6 +430,15 @@ def run_independent_inference(
         mask = prediction.binary_original.data
         affine = prepared.original.affine
         run.write_nifti("prediction_mask.nii.gz", mask, affine, binary=True)
+        # Phase 7-A: derived review labelmap (display only); prediction_mask stays the AI result
+        bad = check_labelmap(components_map, mask, quant["components"])
+        if bad or hashlib.sha256(mask.tobytes()).hexdigest() != mask_digest:
+            raise InferenceError(
+                Code.OUTPUT_VERIFY,
+                "Component labelmap failed verification.",
+                "; ".join(bad) or "mask changed",
+            )
+        run.write_nifti("prediction_components.nii.gz", components_map, affine, binary=False)
         volumes = []
         if export_inputs:
             for item in (dwi, adc):
@@ -450,6 +465,23 @@ def run_independent_inference(
         mask_entry["same_grid_as"] = "dwi"
         mask_entry["kind"] = "model_prediction"
         volumes.append(mask_entry)
+        comp_entry = _volume_entry(
+            "prediction_components",
+            "label",
+            "prediction_components.nii.gz",
+            components_map,
+            affine,
+            sha256_path(run.staging / "prediction_components.nii.gz"),
+        )
+        comp_entry["labels"] = {
+            "0": "background",
+            "1-254": "component display label (size rank, largest = 1)",
+            "255": "other components (size rank above 254)",
+        }
+        comp_entry["same_grid_as"] = "dwi"
+        comp_entry["kind"] = "derived_review_labelmap"
+        comp_entry["derived_from"] = "prediction_mask"
+        volumes.append(comp_entry)
         manifest = {
             "schema_version": schemas.MANIFEST_SCHEMA,
             "case_id": case_id,

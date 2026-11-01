@@ -25,6 +25,7 @@ from neuroscan_api.schemas import (
     ResearchScores,
     RunModel,
     RunResultResponse,
+    SliceRange,
     Viewer,
     ViewerVolume,
     WarningItem,
@@ -38,6 +39,7 @@ VOLUME_ROLES = {
     "dwi": "input_dwi_deid",
     "adc": "input_adc_deid",
     "prediction_mask": "prediction_mask",
+    "prediction_components": "prediction_components",
 }
 
 
@@ -151,6 +153,12 @@ def map_result(run: InferenceRun, quant: dict, manifest: dict, files) -> RunResu
                 bbox_min_voxel=c["bbox_min_voxel"],
                 bbox_max_voxel=c["bbox_max_voxel"],
                 hemisphere_estimate=c["hemisphere_estimate"],
+                # Phase 7-A fields; None for runs made before the labelmap existed
+                display_label=c.get("display_label"),
+                size_rank=c.get("size_rank"),
+                representative_voxel=c.get("representative_voxel"),
+                representative_world_mm=c.get("representative_world_mm"),
+                slice_range=SliceRange(**c["slice_range"]) if c.get("slice_range") else None,
             )
             for c in comps[:MAX_COMPONENTS]
         ],

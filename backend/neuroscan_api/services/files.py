@@ -17,6 +17,7 @@ DOWNLOAD_NAMES = {
     "input_dwi_deid": "dwi.nii.gz",
     "input_adc_deid": "adc.nii.gz",
     "prediction_mask": "prediction_mask.nii.gz",
+    "prediction_components": "prediction_components.nii.gz",  # Phase 7-A review labelmap
     "quantification_json": "quantification.json",
     "metadata_json": "inference_metadata.json",
     "manifest_json": "manifest.json",

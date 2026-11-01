@@ -1,4 +1,12 @@
 /** Test double: records calls instead of rendering (jsdom has no WebGL). */
+import { checkDisplay, type ComponentDisplay } from "./labelLut";
+import {
+  checkVoxel,
+  type CrosshairLocation,
+  parseNiivueLocation,
+  toCrosshairLocation,
+  type Vec3,
+} from "./location";
 import {
   type BaseKind,
   CAMERA_PRESETS,
@@ -12,6 +20,15 @@ import {
   type ViewKind,
   type VolumeBuffers,
 } from "./ViewerEngine";
+
+/** Matches the test fixtures' image shape (112 x 112 x 73). */
+export const FAKE_DIMS = [112, 112, 73] as const;
+const IDENTITY = [
+  [1, 0, 0, 0],
+  [0, 1, 0, 0],
+  [0, 0, 1, 0],
+  [0, 0, 0, 1],
+];
 
 export class FakeViewerEngine implements ViewerEngine {
   calls: Array<[string, ...unknown[]]> = [];
@@ -113,6 +130,55 @@ export class FakeViewerEngine implements ViewerEngine {
   resetView() {
     this.log("resetView");
     this.setCameraPreset(DEFAULT_CAMERA_PRESET);
+  }
+
+  // --- Phase 7-0/7-A: identity affine on a FAKE_DIMS grid (file grid = display grid) ---------
+  componentDisplay: ComponentDisplay | null = null;
+  private locationListeners = new Set<(location: CrosshairLocation) => void>();
+  private crosshair: CrosshairLocation = this.at([32, 32, 10]);
+
+  private at(vox: Vec3): CrosshairLocation {
+    const frac = vox.map((v, i) => (v + 0.5) / (FAKE_DIMS[i] ?? 1)) as Vec3;
+    return toCrosshairLocation({ frac, mm: [...vox] }, IDENTITY, FAKE_DIMS, FAKE_DIMS);
+  }
+  private move(location: CrosshairLocation) {
+    this.crosshair = location;
+    for (const listener of this.locationListeners) listener(location);
+  }
+  setComponentDisplay(display: ComponentDisplay | null) {
+    this.componentDisplay = display ? checkDisplay(display) : null;
+    this.log("setComponentDisplay", display);
+  }
+  onLocationChange(listener: (location: CrosshairLocation) => void): () => void {
+    this.locationListeners.add(listener);
+    return () => this.locationListeners.delete(listener);
+  }
+  /** Number of subscribed location listeners (unmount cleanup checks). */
+  get locationListenerCount(): number {
+    return this.locationListeners.size;
+  }
+  getCrosshair(): CrosshairLocation {
+    return this.crosshair;
+  }
+  jumpToVoxel(vox: [number, number, number]) {
+    this.log("jumpToVoxel", vox);
+    this.move(this.at(checkVoxel(vox, FAKE_DIMS)));
+  }
+  setSliceVoxel(axis: SliceAxis, index: number) {
+    if (!Number.isInteger(index) || index < 0 || index >= (FAKE_DIMS[axis] ?? 0)) {
+      throw new Error("slice index out of range");
+    }
+    this.log("setSliceVoxel", axis, index);
+    const vox: Vec3 = [...this.crosshair.vox];
+    vox[axis] = index;
+    this.move(this.at(vox));
+  }
+  /** Simulates NiiVue's locationChange payload (mouse click / drag); goes through the guard. */
+  emitRawLocation(raw: unknown): boolean {
+    const parsed = parseNiivueLocation(raw);
+    if (!parsed) return false;
+    this.move(toCrosshairLocation(parsed, IDENTITY, FAKE_DIMS, FAKE_DIMS));
+    return true;
   }
   dispose() {
     this.log("dispose");

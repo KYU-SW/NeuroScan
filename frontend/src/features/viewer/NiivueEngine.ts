@@ -14,8 +14,19 @@
  *
  * Re-run the drawing-layer spike (/__spike) whenever the NiiVue version changes.
  */
-import { cmapper, Niivue, NVImage, SLICE_TYPE } from "@niivue/niivue";
+import { cmapper, Niivue, type NiivueEventListener, NVImage, SLICE_TYPE } from "@niivue/niivue";
 
+import { buildComponentLut, checkDisplay, type ComponentDisplay, SHOW_ALL } from "./labelLut";
+import {
+  applyAffine,
+  checkVoxel,
+  type CrosshairLocation,
+  invertAffine,
+  parseNiivueLocation,
+  type RawLocation,
+  toCrosshairLocation,
+  type Vec3,
+} from "./location";
 import {
   type BaseKind,
   CAMERA_PRESET_NAMES,
@@ -53,8 +64,26 @@ const NAMES: Record<BaseKind | "mask", string> = {
   adc: "adc.nii.gz",
   mask: "prediction_mask.nii.gz",
 };
+const COMPONENTS_NAME = "prediction_components.nii.gz";
 
 type DrawColorMap = Parameters<typeof cmapper.makeDrawLut>[0];
+
+/** 256 RGBA LUT bytes -> dense ColorMap (I = 0..255), so makeDrawLut reproduces it exactly. */
+function lutToColorMap(lut: Uint8ClampedArray): DrawColorMap {
+  const R: number[] = [];
+  const G: number[] = [];
+  const B: number[] = [];
+  const A: number[] = [];
+  const I: number[] = [];
+  for (let i = 0; i < 256; i++) {
+    R.push(lut[i * 4] ?? 0);
+    G.push(lut[i * 4 + 1] ?? 0);
+    B.push(lut[i * 4 + 2] ?? 0);
+    A.push(lut[i * 4 + 3] ?? 0);
+    I.push(i);
+  }
+  return { R, G, B, A, I };
+}
 
 /** Display window NiiVue computed on load (robust range); 0..1 if it reports none. */
 function windowOf(img: NVImage): IntensityWindow {
@@ -76,6 +105,20 @@ export class NiivueEngine implements ViewerEngine {
   private maskColor: MaskColorName = DEFAULT_MASK_COLOR;
   private render3DBackground = true;
   private cameraListeners = new Set<() => void>();
+  private componentDisplay: ComponentDisplay | null = null;
+  private locationListeners = new Set<(location: CrosshairLocation) => void>();
+  /** Spike diagnostics: NiiVue locationChange events received / rejected by the type guard. */
+  readonly locationStats = { niivueEvents: 0, rejected: 0 };
+  private readonly onNiivueLocation: NiivueEventListener<"locationChange"> = (event) => {
+    this.locationStats.niivueEvents++;
+    if (this.locationListeners.size === 0) return; // Phase 6 screens do not subscribe
+    const raw = parseNiivueLocation(event.detail);
+    if (!raw || !this.base) {
+      this.locationStats.rejected++;
+      return;
+    }
+    this.emit(this.normalize(raw));
+  };
 
   constructor(private readonly colorStrategy: MaskColorStrategy = "customLut") {}
 
@@ -88,6 +131,11 @@ export class NiivueEngine implements ViewerEngine {
   maskLutAlpha(): [number, number] {
     const lut = this.requireNv().drawLut.lut;
     return [lut[3] ?? -1, lut[7] ?? -1];
+  }
+
+  /** Diagnostics: copy of the active draw LUT (256 RGBA entries). */
+  drawLutBytes(): Uint8ClampedArray {
+    return Uint8ClampedArray.from(this.requireNv().drawLut.lut);
   }
 
   async attach(canvas: HTMLCanvasElement): Promise<void> {
@@ -110,15 +158,20 @@ export class NiivueEngine implements ViewerEngine {
     this.nv.onAzimuthElevationChange = () => {
       for (const listener of this.cameraListeners) listener();
     };
+    this.nv.addEventListener("locationChange", this.onNiivueLocation);
     this.setCameraPreset(DEFAULT_CAMERA_PRESET);
   }
 
   async load(volumes: VolumeBuffers): Promise<void> {
     const nv = this.requireNv();
+    // the drawing layer shows the component labelmap when the result has one, else the mask
+    const drawing = volumes.components
+      ? { url: volumes.components, name: COMPONENTS_NAME }
+      : { url: volumes.mask, name: NAMES.mask };
     const [dwi, adc, mask] = await Promise.all([
       NVImage.loadFromUrl({ url: volumes.dwi, name: NAMES.dwi, colormap: "gray" }),
       NVImage.loadFromUrl({ url: volumes.adc, name: NAMES.adc, colormap: "gray" }),
-      NVImage.loadFromUrl({ url: volumes.mask, name: NAMES.mask, colormap: "gray" }),
+      NVImage.loadFromUrl({ ...drawing, colormap: "gray" }),
     ]);
     if (this.nv !== nv) return; // disposed while loading
     this.images = { dwi, adc };
@@ -203,6 +256,7 @@ export class NiivueEngine implements ViewerEngine {
     const nv = this.requireNv();
     nv.scene.crosshairPos = this.currentImage().convertMM2Frac(mm);
     nv.drawScene();
+    this.emitCurrent();
   }
 
   stepSlice(axis: SliceAxis, delta: number): void {
@@ -228,6 +282,76 @@ export class NiivueEngine implements ViewerEngine {
       this.currentImage().convertFrac2MM(pos),
     );
     nv.drawScene();
+    this.emitCurrent();
+  }
+
+  // --- Phase 7-0 ------------------------------------------------------------------------------
+
+  setComponentDisplay(display: ComponentDisplay | null): void {
+    this.componentDisplay = display ? checkDisplay(display) : null;
+    if (this.nv && this.mask) this.applyMaskStyle();
+  }
+
+  onLocationChange(listener: (location: CrosshairLocation) => void): () => void {
+    this.locationListeners.add(listener);
+    return () => this.locationListeners.delete(listener);
+  }
+
+  getCrosshair(): CrosshairLocation {
+    const img = this.currentImage();
+    const frac = this.getCrosshairFraction();
+    const mm = img.convertFrac2MM(frac, true); // true (oblique) affine, as in NiiVue's own event
+    return this.normalize({ frac, mm: [mm[0] ?? 0, mm[1] ?? 0, mm[2] ?? 0] });
+  }
+
+  jumpToVoxel(vox: [number, number, number]): void {
+    const nv = this.requireNv();
+    const { affine, fileDims } = this.geometry();
+    const target = checkVoxel(vox, fileDims);
+    nv.scene.crosshairPos = this.currentImage().convertMM2Frac(applyAffine(affine, target), true);
+    nv.drawScene();
+    this.emitCurrent();
+  }
+
+  setSliceVoxel(axis: SliceAxis, index: number): void {
+    const nv = this.requireNv();
+    const { dimsRAS } = this.geometry();
+    const size = dimsRAS[axis] ?? 0;
+    if (!Number.isInteger(index) || index < 0 || index >= size) {
+      throw new Error("slice index out of range");
+    }
+    const slice: Vec3 = [...this.getCrosshair().slice];
+    slice[axis] = index;
+    nv.scene.crosshairPos = this.currentImage().convertVox2Frac(slice);
+    nv.drawScene();
+    this.emitCurrent();
+  }
+
+  private geometry(): { affine: number[][]; fileDims: number[]; dimsRAS: number[] } {
+    const img = this.currentImage();
+    const hdr = img.hdr;
+    const ras = img.dimsRAS;
+    if (!hdr || !ras) throw new Error("volume geometry unavailable");
+    return {
+      affine: hdr.affine,
+      fileDims: [hdr.dims[1] ?? 0, hdr.dims[2] ?? 0, hdr.dims[3] ?? 0],
+      dimsRAS: [ras[1] ?? 0, ras[2] ?? 0, ras[3] ?? 0],
+    };
+  }
+
+  private normalize(raw: RawLocation): CrosshairLocation {
+    const { affine, fileDims, dimsRAS } = this.geometry();
+    return toCrosshairLocation(raw, invertAffine(affine), fileDims, dimsRAS);
+  }
+
+  private emit(location: CrosshairLocation): void {
+    for (const listener of this.locationListeners) listener(location);
+  }
+
+  /** Programmatic moves do not raise NiiVue's event; report them the same way. */
+  private emitCurrent(): void {
+    if (this.locationListeners.size === 0 || !this.base) return;
+    this.emit(this.getCrosshair());
   }
 
   zoomBy(factor: number): void {
@@ -269,7 +393,9 @@ export class NiivueEngine implements ViewerEngine {
     const nv = this.nv;
     this.nv = null;
     this.cameraListeners.clear();
+    this.locationListeners.clear();
     if (nv) {
+      nv.removeEventListener("locationChange", this.onNiivueLocation);
       nv.onAzimuthElevationChange = () => {};
       nv.closeDrawing();
       for (const v of [...nv.volumes]) nv.removeVolume(v);
@@ -296,9 +422,11 @@ export class NiivueEngine implements ViewerEngine {
   private applyMaskStyle(): void {
     const nv = this.requireNv();
     if (this.colorStrategy === "customLut") {
-      const [r, g, b] = hexToRgb(MASK_PALETTE[this.maskColor]);
-      const cmap: DrawColorMap = { R: [0, r], G: [0, g], B: [0, b], A: [0, 255], I: [0, 1] };
-      nv.drawLut = cmapper.makeDrawLut(cmap);
+      // one path for every label value: Phase 6 single colour (no component display set) or
+      // Phase 7-A component colours / selection / hiding
+      const display = this.componentDisplay ?? { ...SHOW_ALL, coloring: "single" as const };
+      const palette = hexToRgb(MASK_PALETTE[this.maskColor]);
+      nv.drawLut = cmapper.makeDrawLut(lutToColorMap(buildComponentLut(display, palette)));
     } else {
       nv.setDrawColormap("$itksnap");
     }

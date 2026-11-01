@@ -1,39 +1,49 @@
 import { useEffect } from "react";
 
 import { ko } from "../../i18n/ko";
-import { sliceAxisOf } from "./keyboard";
 import { useViewerStore } from "./viewerStore";
 import {
   CAMERA_PRESET_NAMES,
   DEFAULT_CAMERA_PRESET,
   MASK_COLOR_NAMES,
   MASK_PALETTE,
+  type SliceAxis,
   type ViewerEngine,
   type ViewKind,
 } from "./ViewerEngine";
 
 const VIEWS: ViewKind[] = ["axial", "coronal", "sagittal", "multiplanar", "render"];
+/** One slider per anatomical axis (display grid index = what the engine reports as slice). */
+const SLIDERS: { view: "axial" | "coronal" | "sagittal"; axis: SliceAxis }[] = [
+  { view: "axial", axis: 2 },
+  { view: "coronal", axis: 1 },
+  { view: "sagittal", axis: 0 },
+];
 
 interface Props {
   engine: ViewerEngine | null;
   sliceCounts: Record<"axial" | "coronal" | "sagittal", number>;
-  lesionCenter: [number, number, number] | null;
+  /** Lesion centre as a file-grid voxel (navigation never uses NiiVue's world-mm approximation). */
+  lesionVoxel: [number, number, number] | null;
+  labelmapAvailable: boolean;
   emptyMask: boolean;
 }
 
-export function ViewerControls({ engine, sliceCounts, lesionCenter, emptyMask }: Props) {
+export function ViewerControls({
+  engine,
+  sliceCounts,
+  lesionVoxel,
+  labelmapAvailable,
+  emptyMask,
+}: Props) {
   // s.tick changes whenever the engine moved outside React, so these reads stay current
   const s = useViewerStore();
   const bumpTick = s.bumpTick;
   // mouse rotation moves the 3D camera outside React: re-read the active preset
   useEffect(() => engine?.onCameraChange(bumpTick), [engine, bumpTick]);
   const camera = engine ? engine.getCameraPreset() : DEFAULT_CAMERA_PRESET;
-  const sliceView = s.view === "coronal" || s.view === "sagittal" ? s.view : "axial";
-  const count = Math.max(1, sliceCounts[sliceView]);
   const win = engine ? engine.getWindow() : null;
   const range = engine ? engine.getWindowRange() : { min: 0, max: 1 };
-  const fraction = engine ? engine.getCrosshairFraction()[sliceAxisOf(s.view)] : 0;
-  const slice = Math.min(count - 1, Math.max(0, Math.floor(fraction * count)));
   const setWin = (next: { min: number; max: number }) => {
     engine?.setWindow(next);
     s.bumpTick();
@@ -137,26 +147,32 @@ export function ViewerControls({ engine, sliceCounts, lesionCenter, emptyMask }:
         </div>
       </fieldset>
 
-      {s.view !== "render" && s.view !== "multiplanar" && (
-        <fieldset>
-          <legend>{ko.viewer.slice}</legend>
-          <input
-            type="range"
-            aria-label={`${ko.viewer.slice} (${ko.viewer.views[sliceView]})`}
-            min={0}
-            max={count - 1}
-            value={slice}
-            disabled={disabled}
-            onChange={(e) => {
-              engine?.setSliceFraction(sliceAxisOf(s.view), (Number(e.target.value) + 0.5) / count);
-              s.bumpTick();
-            }}
-          />
-          <span aria-live="polite">
-            {slice + 1} / {count}
-          </span>
-        </fieldset>
-      )}
+      <fieldset>
+        <legend>{ko.viewer.slice}</legend>
+        {/* UI -> engine command only; the values come back through the engine's location event
+            (store.crosshair), so canvas clicks, keys and region jumps update all three at once */}
+        {SLIDERS.map(({ view, axis }) => {
+          const count = Math.max(1, sliceCounts[view]);
+          const value = Math.min(count - 1, s.crosshair?.slice[axis] ?? 0);
+          return (
+            <label className="row" key={view}>
+              <span className="slider-name">{ko.viewer.views[view]}</span>
+              <input
+                type="range"
+                aria-label={`${ko.viewer.slice} (${ko.viewer.views[view]})`}
+                min={0}
+                max={count - 1}
+                value={value}
+                disabled={disabled || !s.crosshair}
+                onChange={(e) => engine?.setSliceVoxel(axis, Number(e.target.value))}
+              />
+              <span>
+                {value + 1} / {count}
+              </span>
+            </label>
+          );
+        })}
+      </fieldset>
 
       <fieldset>
         <legend>{ko.viewer.window}</legend>
@@ -231,6 +247,23 @@ export function ViewerControls({ engine, sliceCounts, lesionCenter, emptyMask }:
           />
           <span>{s.maskOpacity.toFixed(2)}</span>
         </label>
+        {labelmapAvailable && (
+          <div className="segmented" role="radiogroup" aria-label={ko.components.coloring}>
+            {(["component", "single"] as const).map((c) => (
+              <button
+                key={c}
+                type="button"
+                role="radio"
+                aria-checked={s.componentColoring === c}
+                className={s.componentColoring === c ? "active" : ""}
+                onClick={() => s.setComponentColoring(c)}
+              >
+                {c === "component" ? ko.components.coloringComponent : ko.components.coloringSingle}
+              </button>
+            ))}
+          </div>
+        )}
+        {labelmapAvailable && <p className="note">{ko.components.paletteNote}</p>}
         <div className="swatches" role="radiogroup" aria-label={ko.viewer.color}>
           {MASK_COLOR_NAMES.map((name) => (
             <button
@@ -248,8 +281,8 @@ export function ViewerControls({ engine, sliceCounts, lesionCenter, emptyMask }:
         </div>
         <button
           type="button"
-          disabled={disabled || !lesionCenter}
-          onClick={() => lesionCenter && engine?.jumpToWorldMm(lesionCenter)}
+          disabled={disabled || !lesionVoxel}
+          onClick={() => lesionVoxel && engine?.jumpToVoxel(lesionVoxel)}
         >
           {ko.viewer.jumpLesion}
         </button>
