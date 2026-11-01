@@ -47,6 +47,7 @@ dist/
 # --- Node (frontend, later phases) ---
 node_modules/
 frontend/dist/
+coverage/
 
 # --- Environment / secrets ---
 .env

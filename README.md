@@ -30,7 +30,7 @@ MRI (DWI/ADC) → 전처리 → 2D / 2.5D 입력 → MONAI U-Net → Slice Predi
 | 후처리 | 초기 Prediction은 작은 Connected Component를 지우지 않고 원본 그대로 보존 |
 | 전처리 v1 | RAS, XY 1.0 mm / Z 원본 유지 (2.5D 인접 Slice = 실제 촬영 Slice), 강도 정규화는 입력 파이프라인에서 |
 | Split v1 | seed 42, 176 / 37 / 37, Negative 3명 분산, thin/thick × 부피 사분위 층화 |
-| Viewer | React + TypeScript + vtk.js, NIfTI 로딩은 itk-wasm (Plan B: NiiVue) |
+| Viewer | React + TypeScript + NiiVue (MVP, Phase 6). vtk.js는 고급 3D 확장, Cornerstone3D는 DICOM 연동 시 검토 |
 | Backend/DB | FastAPI + MySQL, AI 파이프라인 검증 이후 구현 (DB에는 메타데이터와 경로만 저장) |
 | MVP 제외 | nnU-Net 비교, FLAIR |
 
@@ -53,7 +53,7 @@ NeuroScan-ai/
 ├── tests/             # 단위 테스트
 ├── docs/              # 설계 문서·실험 기록
 ├── backend/           # FastAPI 백엔드 (neuroscan_api, Phase 5B)
-├── frontend/          # React + vtk.js Viewer (이후 Phase)
+├── frontend/          # React + TypeScript + NiiVue Viewer (Phase 6)
 ├── data/              # 로컬 전용: raw/ processed/ splits/   (Git 제외)
 ├── models/            # 학습된 checkpoint                    (Git 제외)
 ├── results/           # 연구 평가 결과·예측 NIfTI            (Git 제외)
@@ -125,7 +125,8 @@ MONAI 2D UNet의 GPU forward(2채널·6채널), NiBabel NIfTI 왕복, NiBabel↔
 | 4 | 2.5D U-Net 및 비교 (Val positive mean Dice 0.743, ΔDice +0.012, 95% CI [−0.002, +0.028] — 유의차 없음) — [docs/phase4_25d.md](docs/phase4_25d.md) | ✅ 완료 |
 | 5A | 독립 단일 환자 추론 (DWI+ADC NIfTI → mask·정량·manifest, CLI/service) — [docs/phase5a_independent_inference.md](docs/phase5a_independent_inference.md) | ✅ 완료 |
 | 5B | FastAPI 백엔드 MVP (업로드·작업 큐·단일 GPU worker·결과·Viewer 파일, localhost) — [docs/phase5b_fastapi_backend.md](docs/phase5b_fastapi_backend.md) | ✅ 완료 |
-| 6–7 | React + vtk.js 2D/3D Viewer | 예정 |
+| 6 | React + NiiVue 2D/3D Viewer MVP (DWI/ADC·AI 예측 mask overlay·Axial/Coronal/Sagittal/MPR/3D·부피·연결 영역 정량, localhost, 인증 없음) — [docs/phase6_viewer.md](docs/phase6_viewer.md) | ✅ 완료 |
+| 7 | Viewer 고도화 (vtk.js surface mesh·component별 3D 색상·DICOM·E2E 등, GT overlay·환자별 Dice는 공개 데이터 연구/검증 모드로 분리) | 예정 |
 
 ## 7. 독립 추론 (Phase 5A)
 
