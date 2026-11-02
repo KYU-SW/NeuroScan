@@ -13,7 +13,7 @@ git:
   # contains this file's final version (a commit cannot record its own hash): set it in a last,
   # manifest-only commit; the evaluator then requires HEAD to descend from it and to differ from
   # it in this file only. null = not frozen yet (final-test mode refuses; dry-run reports pending).
-  frozen_commit: null
+  frozen_commit: 7a98c1002c0ca54432d9def3afa74fac36ca2759
   lock_tag: neuroscan-v1.0.0-test-locked   # must exist and point at HEAD before the final test
 
 models:                                    # single-seed official runs (seed 42), Phase 3 / 4
