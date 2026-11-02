@@ -7,8 +7,8 @@
 >
 > - 확정 진단, 치료 추천, 예후 예측을 하지 않습니다.
 > - 모든 결과는 영상 검토를 보조하는 참고 정보이며, **최종 판단은 반드시 의료진이 해야 합니다.**
-> - 아래 성능 수치는 모두 **Validation 결과**입니다. Test Split은 봉인되어 있으며, 최종 내부 Test 성능과
->   외부 데이터셋 검증은 아직 측정하지 않았습니다 ([§3](#3-성능-현황-validation-결과)).
+> - 아래 성능 수치는 공개 데이터(ISLES 2022)의 Validation 결과와 고정 내부 평가 세트 결과이며 **임상 성능이
+>   아닙니다.** 외부 데이터셋 검증은 아직 수행하지 않았습니다 ([§3](#3-성능-현황)).
 
 ## 1. 목적
 
@@ -30,7 +30,7 @@ MRI (DWI/ADC) → 전처리 → 2D / 2.5D 입력 → MONAI U-Net → Slice Predi
 | Proposed | DWI(z-1, z, z+1) + ADC(z-1, z, z+1), 6채널 2.5D U-Net |
 | 모델 구현 | MONAI `UNet` (외부 U-Net 구현 코드를 복사하지 않음) |
 | 평가 | Primary: Patient-wise Dice / Secondary: IoU, Sensitivity, Precision, Lesion Volume Error |
-| 연구 목표 | 독립 Test 환자 평균 Dice ≥ 0.70 (프로그램의 합격/불합격 조건이 아닌 연구 목표) |
+| 연구 목표 | 고정 내부 평가(Test) 환자 평균 Dice ≥ 0.70 (프로그램의 합격/불합격 조건이 아닌 연구 목표; v1에서 2D·2.5D 모두 달성) |
 | 분할 원칙 | 환자 단위 Train / Validation / Test |
 | 후처리 | 초기 Prediction은 작은 Connected Component를 지우지 않고 원본 그대로 보존 |
 | 전처리 v1 | RAS, XY 1.0 mm / Z 원본 유지 (2.5D 인접 Slice = 실제 촬영 Slice), 강도 정규화는 입력 파이프라인에서 |
@@ -51,7 +51,11 @@ MRI (DWI/ADC) → 전처리 → 2D / 2.5D 입력 → MONAI U-Net → Slice Predi
 - Research Mode (기본 비활성): Validation case의 Ground Truth 비교, TP / FP / FN 차이 지도,
   Patient-level Dice·IoU·Sensitivity·Precision, Component Matching
 
-## 3. 성능 현황 (Validation 결과)
+## 3. 성능 현황
+
+모든 수치는 병변이 있는 환자의 환자 단위 평균 Dice(원본 공간, threshold 0.5, 후처리 없음)입니다.
+
+### 3.1 Validation 결과 (checkpoint 선택에 사용, 37명 중 positive 36명)
 
 | 모델 | Validation positive-patient mean Dice |
 |---|---|
@@ -61,12 +65,26 @@ MRI (DWI/ADC) → 전처리 → 2D / 2.5D 입력 → MONAI U-Net → Slice Predi
 - 2.5D와 2D의 차이(ΔDice +0.012, 95% CI [−0.002, +0.028], Wilcoxon p = 0.29)는 **통계적으로 유의하지
   않았습니다.** 상세: [docs/phase4_25d.md](docs/phase4_25d.md)
 - Validation 데이터는 checkpoint 선택에 사용되었으므로 결과가 낙관적일 수 있습니다.
-- **Test Split은 아직 봉인 상태**이며, 최종 내부 Test 성능은 아직 측정하지 않았습니다.
-- Test Ground Truth는 데이터 분할 층화와 재구성·원본 공간 복원 엔진 검증에 제한적으로 사용되었습니다.
-  Test Prediction 생성, 모델 선택, Threshold 조정, 후처리 선택 또는 성능 기반 정책 결정에는 사용되지
-  않았습니다. 최종 평가 방법은 [docs/final_test_protocol.md](docs/final_test_protocol.md)에 사전 등록되어 있습니다.
+
+### 3.2 고정 내부 평가 결과 (동결된 v1의 최초 1회 평가, 37명 중 positive 36명)
+
+사전 등록한 프로토콜([docs/final_test_protocol.md](docs/final_test_protocol.md))대로 tag
+`neuroscan-v1.0.0-test-locked` 기준에서 1회 실행했습니다. 상세: [docs/final_test_report.md](docs/final_test_report.md)
+
+| 모델 | Mean Dice ± SD | Median |
+|---|---|---|
+| 2D U-Net Baseline | **0.7440** ± 0.179 | 0.825 |
+| 2.5D U-Net | **0.7384** ± 0.200 | 0.801 |
+
+- 짝지은 차이(2.5D − 2D) −0.0056, 95% bootstrap CI [−0.0297, +0.0184], Wilcoxon p = 0.371 →
+  **2.5D의 우위는 확인되지 않았습니다**(명확한 우열 없음). Validation의 +0.012 차이는 재현되지 않았습니다.
+- 두 모델 모두 사전 연구 목표인 평균 Dice 0.70 이상입니다.
+- 평가 세트의 Ground Truth는 과거 데이터 분할 층화와 재구성·원본 공간 복원 엔진 검증에 제한적으로
+  사용되었으나, Test Prediction 생성, 모델 선택, Threshold 조정, 후처리 선택 또는 성능 기반 정책 결정에는
+  사용되지 않았습니다.
+- 단일 seed 학습, 병변 없는 환자 1명, 기관 정보 없음 등의 제한이 있습니다(보고서 §8).
 - **외부 데이터셋 검증은 아직 수행하지 않았습니다.**
-- Validation 성능을 실제 임상 성능으로 해석해서는 안 됩니다.
+- Validation 및 내부 평가 성능을 실제 임상 성능으로 해석해서는 안 됩니다.
 
 ## 4. 디렉터리 구조
 
@@ -213,7 +231,7 @@ case ID와 요약 통계만 포함)만 있습니다.
 | 7-A | Connected Component Review(선택·강조·숨기기)와 동기화된 voxel 기반 위치 이동 — [docs/phase7_component_review.md](docs/phase7_component_review.md) | ✅ 완료 |
 | 7-B | Research Validation Mode (Validation case GT 비교, TP/FP/FN 차이 지도, 환자 단위 지표, Component Matching) — [docs/phase7_research_validation.md](docs/phase7_research_validation.md) | ✅ 완료 |
 | 7-C | 선택적 Viewer 고도화 후보 (surface mesh, 일반 Viewer 레이아웃 정리 등) | 후보 |
-| Final Test Evaluation | 봉인된 Test Split으로 최종 내부 성능 1회 측정 — 프로토콜·보호 장치·Validation dry-run 준비: [docs/final_test_protocol.md](docs/final_test_protocol.md) | 예정 |
+| Final Test Evaluation | 동결된 v1의 고정 내부 평가 세트 최초 1회 평가 (2D 0.7440 vs 2.5D 0.7384, 차이 −0.0056, 95% CI [−0.0297, +0.0184], p = 0.371 — 2.5D 우위 미확인) — [docs/final_test_report.md](docs/final_test_report.md), 프로토콜 [docs/final_test_protocol.md](docs/final_test_protocol.md) | ✅ 완료 |
 | External Validation | 외부 데이터셋 검증 | 예정 |
 | Additional Data Training | 추가 데이터 학습 | 예정 |
 
@@ -255,7 +273,7 @@ skull-strip된 DWI + ADC NIfTI 한 쌍(같은 격자)을 입력하면 Phase 4 2.
 ## 12. 알려진 제한
 
 - 외부 데이터셋 검증을 수행하지 않았습니다.
-- 봉인된 Test Split의 최종 내부 Test 평가를 수행하지 않았습니다.
+- 고정 내부 평가는 단일 seed 모델로 1회 수행했으며, 평가 세트 GT는 과거 분할 층화·엔진 검증에 제한적으로 사용되었습니다.
 - 인증·권한과 HTTPS가 없습니다. 현재 localhost 연구용으로만 실행합니다.
 - DICOM / PACS 연동이 없습니다 (NIfTI 입력만 지원).
 - 의료진의 Mask 편집 기능이 없습니다.
