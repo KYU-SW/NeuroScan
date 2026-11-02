@@ -62,6 +62,9 @@ MRI (DWI/ADC) → 전처리 → 2D / 2.5D 입력 → MONAI U-Net → Slice Predi
   않았습니다.** 상세: [docs/phase4_25d.md](docs/phase4_25d.md)
 - Validation 데이터는 checkpoint 선택에 사용되었으므로 결과가 낙관적일 수 있습니다.
 - **Test Split은 아직 봉인 상태**이며, 최종 내부 Test 성능은 아직 측정하지 않았습니다.
+- Test Ground Truth는 데이터 분할 층화와 재구성·원본 공간 복원 엔진 검증에 제한적으로 사용되었습니다.
+  Test Prediction 생성, 모델 선택, Threshold 조정, 후처리 선택 또는 성능 기반 정책 결정에는 사용되지
+  않았습니다. 최종 평가 방법은 [docs/final_test_protocol.md](docs/final_test_protocol.md)에 사전 등록되어 있습니다.
 - **외부 데이터셋 검증은 아직 수행하지 않았습니다.**
 - Validation 성능을 실제 임상 성능으로 해석해서는 안 됩니다.
 
@@ -210,7 +213,7 @@ case ID와 요약 통계만 포함)만 있습니다.
 | 7-A | Connected Component Review(선택·강조·숨기기)와 동기화된 voxel 기반 위치 이동 — [docs/phase7_component_review.md](docs/phase7_component_review.md) | ✅ 완료 |
 | 7-B | Research Validation Mode (Validation case GT 비교, TP/FP/FN 차이 지도, 환자 단위 지표, Component Matching) — [docs/phase7_research_validation.md](docs/phase7_research_validation.md) | ✅ 완료 |
 | 7-C | 선택적 Viewer 고도화 후보 (surface mesh, 일반 Viewer 레이아웃 정리 등) | 후보 |
-| Final Test Evaluation | 봉인된 Test Split으로 최종 내부 성능 1회 측정 | 예정 |
+| Final Test Evaluation | 봉인된 Test Split으로 최종 내부 성능 1회 측정 — 프로토콜·보호 장치·Validation dry-run 준비: [docs/final_test_protocol.md](docs/final_test_protocol.md) | 예정 |
 | External Validation | 외부 데이터셋 검증 | 예정 |
 | Additional Data Training | 추가 데이터 학습 | 예정 |
 

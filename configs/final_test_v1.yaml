@@ -1,0 +1,156 @@
+# NeuroScan v1 — Final Test manifest (pre-registered protocol; contains no test result).
+# Read by scripts/evaluate_final_test.py. Rationale and procedure: docs/final_test_protocol.md.
+#
+# Hashes
+#   *_sha256 of text files (yaml/json) = SHA-256 of the file content with CRLF -> LF normalised,
+#   i.e. the bytes Git stores (.gitattributes: eol=lf), so the value does not depend on the
+#   checkout's line endings. Checkpoints (binary, not in Git) are hashed byte for byte.
+#   The approval hash (--approve-test) is the same LF-normalised SHA-256 of this file.
+version: final_test_v1
+
+git:
+  # Commit holding the evaluation code that is frozen for the test. It cannot be the commit that
+  # contains this file's final version (a commit cannot record its own hash): set it in a last,
+  # manifest-only commit; the evaluator then requires HEAD to descend from it and to differ from
+  # it in this file only. null = not frozen yet (final-test mode refuses; dry-run reports pending).
+  frozen_commit: null
+  lock_tag: neuroscan-v1.0.0-test-locked   # must exist and point at HEAD before the final test
+
+models:                                    # single-seed official runs (seed 42), Phase 3 / 4
+  2d:
+    checkpoint: models/phase3/2d_baseline_20261017-133753_38dfcea89a50/best.pt
+    checkpoint_sha256: e0d2512780468bcee51806bb75f259790877470042c7c8069b1bd12386939b59
+    training_config: configs/2d_baseline.yaml
+    training_config_sha256: 381ede5dcc0059c2009af35983540aa0bc2926d6cc2e92e71177fc6ae330f5f2
+    config_hash: 38dfcea89a50              # checkpoint info.config_hash
+    best_epoch: 42
+    in_channels: 2
+    validation_reference: results/phase3/2d_baseline_20261017-133753_38dfcea89a50
+  25d:
+    checkpoint: models/phase4/25d_baseline_20261024-192617_34d18df104da/best.pt
+    checkpoint_sha256: ff61bc7f86655b7addee3298eefacbcfe40a1a872e361148ce2609f5f24adbe7
+    training_config: configs/25d_baseline.yaml
+    training_config_sha256: 773dc21fefaed49e01a7d43daf425ee8d93657b98175af1f7e8de7713d48c469
+    config_hash: 34d18df104da
+    best_epoch: 49
+    in_channels: 6
+    validation_reference: results/phase4/25d_baseline_20261024-192617_34d18df104da
+
+configs:
+  preprocess: {path: configs/preprocess_v1.yaml,
+               sha256: c4d18b85dede08a57bebd0e646c538bcad7ec5cd5ad113448fc705da4dae5a74}
+  inference: {path: configs/inference_v1.yaml,
+              sha256: 4b8f26b7521f27380fff411b3982c83fdff901a34c15cd90f83c4435f314ed80}
+
+split:
+  path: data/splits/split_v1_seed42.json
+  sha256: c086c6508d1608d8521b97150f82a299492d8d32d0691bd46695766749dcc65e
+  seed: 42
+  sizes: {train: 176, val: 37, test: 37}
+
+# Frozen policy. The evaluator checks these against both training configs and its own code.
+policy:
+  seed: 42
+  modalities: [dwi, adc]
+  channel_order:
+    2d: [dwi_z, adc_z]
+    25d: [dwi_z-1, dwi_z, dwi_z+1, adc_z-1, adc_z, adc_z+1]   # modality-major, edge-replicated
+  context_slices: {2d: 0, 25d: 1}
+  preprocessing_version: v1                # processed/v1: RAS, XY 1.0 mm, Z kept
+  normalization:
+    dwi: {method: clip_zscore, clip_percentiles: [0.5, 99.5]}   # per case, brain voxels
+    adc: {method: clip_zscore, clip_percentiles: [0.5, 99.5]}
+  brain_mask_policy: skull_stripped_background
+  brain_mask_gating: true                  # anatomical ROI restriction at inference
+  exclude_brain_free_slices: true          # training sampling only (already applied)
+  threshold: 0.5
+  postprocessing: none
+  small_component_removal: false
+  precision: fp32
+  evaluation_path: training_validation     # processed/v1 -> predict_case -> restore -> original GT
+  evaluation_space: original               # original patient grid vs original GT
+  small_region_10pct_rule: viewer_display_only   # never used for metrics, removal or exclusion
+
+metrics:
+  definitions:                             # voxel counts on the original grid
+    dice: 2TP / (2TP + FP + FN)
+    iou: TP / (TP + FP + FN)
+    sensitivity: TP / (TP + FN)
+    precision: TP / (TP + FP); undefined when the prediction is empty
+    volume_error_ml: prediction volume - GT volume (signed)
+    absolute_volume_error_ml: abs(volume_error_ml)
+    relative_volume_error_percent: 100 * volume_error_ml / GT volume
+    component_count: 3D connected components (26-connectivity, analysis.components)
+  undefined_values: excluded from that metric and counted; never converted to 0 or 1
+  negative_case_policy: >-
+    Cases with empty GT are excluded from every positive mean and reported separately:
+    correct negative or not, false-positive voxels, volume and component count.
+
+endpoints:
+  primary:
+    metric: dice
+    population: positive test patients (non-empty GT), same patients for both models
+    comparison: paired difference 2.5D - 2D per patient
+    report: [mean, median, sd, paired_difference_mean, bootstrap_ci95, wilcoxon_p]
+  secondary:                               # exploratory: effect sizes and distributions only
+    - iou
+    - sensitivity
+    - precision
+    - volume_error_ml
+    - absolute_volume_error_ml
+    - relative_volume_error_percent
+    - component_count_prediction
+    - component_count_gt
+  negative_report:
+    - negative_outcome
+    - prediction_voxels
+    - false_positive_volume_ml
+    - false_positive_component_count
+
+statistics:
+  bootstrap: {method: percentile, statistic: mean of paired differences, n_boot: 10000,
+              seed: 42, ci: 0.95}
+  wilcoxon: {alternative: two-sided, zero_differences: scipy default}
+  multiplicity: >-
+    Only the primary endpoint carries the confirmatory comparison. Secondary and subgroup
+    p-values are not used to draw conclusions.
+
+subgroups:                                 # case_metadata.csv columns; descriptive only
+  columns: [volume_group, spacing_group, adc_unit_group, obliquity_group, center]
+  min_n_for_inference: 10                  # below this: descriptive statistics only, no p-value
+  metadata: results/phase2/case_metadata.csv
+
+failure_case:
+  metric: dice
+  below: 0.50
+  rule: patient-wise Dice < 0.50 (positive patients, either model)
+  use: QA and failure analysis only; never a reason to change model, threshold or post-processing
+
+qa_images:
+  selection:
+    - largest_improvement: 3               # 2.5D - 2D Dice, highest
+    - largest_deterioration: 3             # 2.5D - 2D Dice, lowest
+    - dice_below: 0.50                     # every positive case, either model
+    - negative_with_false_positive: true
+  use: result inspection only
+
+rules:
+  no_retuning_after_test: >-
+    Test results never change the checkpoints, threshold, gating, pre- or post-processing,
+    metrics, endpoints, subgroups or this manifest. A lower than expected result is reported as is.
+  rerun: >-
+    Only after a technical failure (crash, I/O or environment error) and only with
+    --resume-after-failure, a written failure report and a reason, with this unchanged manifest.
+    A completed run is never repeated.
+  result_scope: >-
+    Aggregate results only go into project reports. Patient-level metrics, predictions,
+    QA images and the case access log stay in results/final_test (Git-ignored).
+  output_dir: results/final_test/v1
+  dry_run_output_dir: results/final_test_dry_run/v1
+
+test_ground_truth_prior_use: >-
+  Test Ground Truth was used in a limited way for stratifying the data split and for verifying the
+  reconstruction and original-space restoration engines. It was not used for generating test
+  predictions, model selection, threshold adjustment, post-processing choice or any
+  performance-based policy decision. The final model performance evaluation has not been
+  performed yet.
