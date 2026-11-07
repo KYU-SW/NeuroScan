@@ -1,8 +1,9 @@
 # Brain Extraction 파일럿 프로토콜
 
 > 연구 및 교육 목적의 프로토타입이며, 임상 사용이 승인된 의료기기가 아닙니다.
-> 이 문서는 Brain Mask 도구를 **비교·선정하는 절차**를 정의합니다. 현재 단계에서는 실행 래퍼, QA 코드, 합성
-> 테스트만 구현되어 있으며 실제 도구 설치·가중치 다운로드·MRI 처리·Brain Mask 생성은 하지 않았습니다.
+> 이 문서는 Brain Mask 도구를 **비교·선정하는 절차**를 정의합니다. 현재까지 실행 래퍼, QA 코드, SynthStrip
+> Docker 실행기, 합성 테스트가 구현되어 있고, SynthStrip 1.8 CPU 이미지로 **합성 영상 1건의 Smoke Test**만
+> 수행했습니다. 실제 SOOP·ISLES MRI 처리와 Brain Mask 생성, HD-BET 설치는 하지 않았습니다.
 > 사례별 수치와 Alias 대응은 포함하지 않습니다.
 
 관련 문서: [SOOP 호환성 프로토콜](soop_compatibility_protocol.md) ·
@@ -65,18 +66,21 @@ TRACE·ADC 적용 가능성은 공식 근거가 없으므로 이 파일럿으로
 | `figures.py` | Panel A–D 정적 QA 그림과 자동 Layout 검사 |
 | `audit.py` | 감사 기록, 해시, 원본 ID 차단, 덮어쓰기 금지 JSON 쓰기 |
 | `selection.py` | SOOP 파일럿 고정 목록, ISLES 결정적 선정, 도구 선택 규칙 |
+| `executors.py` | SynthStrip Docker 실행기(고정 정책 `bm_synthstrip_1_8_cpu_pilot`). 프로세스를 실행하는 유일한 모듈 |
 
 CLI: `scripts/run_brain_extraction_pilot.py` (`specs`: 명령 명세 출력, `run`: 현재 단계에서는 외부 도구 거부).
 
-- 패키지는 `subprocess`·네트워크·모델 라이브러리를 import하지 않는다(자동 테스트로 확인).
+- `executors.py`만 `subprocess`를 사용하며(항상 argv 목록, `shell=False`), 나머지 모듈은 프로세스·네트워크·
+  모델 라이브러리를 import하지 않는다(자동 테스트로 확인). Runner는 실행기를 import하지 않고 주입받는다.
 - 외부 도구 Runner는 실행기(executor)를 주입해야만 동작하며, 기본 실행기는 실행을 거부한다.
-  현재 저장소에는 실제 실행기가 없다.
+  현재 구현된 실제 실행기는 SynthStrip Docker 실행기 하나이며(13장), HD-BET 실행기는 없다.
 - 출력: `<out>/<alias>/<tool>/{brain_mask.nii.gz, qa.json, audit.json, figure_info.json, run.log}`.
   `.part` 폴더에 쓴 뒤 이름을 바꾸며, 기존 폴더는 덮어쓰지 않는다. 저장되는 Mask는 TRACE 격자·qform/sform
   코드를 가진 uint8 0/1 영상이고, 도구 원출력도 같은 폴더에 보존한다.
 - 감사 기록: 도구·버전, 명세(SynthStrip: container digest·model hash·인자·장치 / HD-BET: weight hash·인자·
   TTA·장치), 실행 명령, 외부 실행 여부, Mock 여부, 방향 변환 기록, 입력·출력 SHA-256, 미수행 작업 목록.
-  설치 전 단계라 digest·hash 필드는 비어 있으며 설치 시 기록한다.
+  SynthStrip은 digest·model hash가 고정 정책에 기록되어 있다(13장). HD-BET은 설치 전이라 비어 있다.
+- 공개 감사 기록에는 Host 절대경로를 남기지 않는다(13.3).
 
 ## 6. 자동 QA와 판정
 
@@ -158,3 +162,55 @@ CLI: `scripts/run_brain_extraction_pilot.py` (`specs`: 명령 명세 출력, `ru
 
 Brain Mask NIfTI, MRI, GT, QA PNG, 환자별 JSON·CSV, Alias 대응표, 가중치, 환자 단위 실행 로그는 Git에서
 제외한다. 공개 출력에 원본 ID가 섞이면 결과를 쓰지 않고 거부한다.
+
+## 13. SynthStrip 1.8 CPU 실행 정책과 합성 Smoke Test
+
+### 13.1 고정 정책 `bm_synthstrip_1_8_cpu_pilot`
+
+| 항목 | 값 |
+|---|---|
+| Image | `freesurfer/synthstrip@sha256:ebbc177221194371f16362513ace68312a22922bb581bdfa618ac7ff9c1d2c06` (CPU, linux/amd64) |
+| Model | `synthstrip.1.pt`, SHA-256 `37417f802196186441aae3e7f385d94f8a98c64a88acaeaa2723af995c653e33` (이미지 내장) |
+| 장치 / Thread | CPU / 4 |
+| 경계 | 1 mm (`-b 1`) |
+| CSF | 포함 (`--no-csf` 미사용) |
+| Network | none |
+
+- 값은 코드(`SynthStripPolicy`, frozen)에 고정되어 있으며, 다른 값으로 만든 정책·명령은 실행기가 거부한다.
+  사례별 변경은 불가능하다.
+- 실행 명령: `docker run --rm --pull never --network none --name <임의 이름> -v <WORKDIR>:/data <digest 고정 Image>
+  -i /data/tool_input.nii.gz -m /data/tool_mask.nii.gz -b 1 -t 4`
+- 실행기는 이미지를 받지 않는다(`--pull never`, 로컬 이미지 digest 확인). Docker Engine 상태 확인, 시간 제한
+  (초과 시 컨테이너 강제 삭제), 종료 코드·stdout·stderr(길이 제한)·실행 시간 기록, 출력 Mask 확인, 실행 후 남은
+  컨테이너 확인을 수행한다.
+
+### 13.2 허용·금지 실행 조건
+
+- Mount는 Runner의 격리 작업 폴더(`<alias>/<tool>.part`) 하나만 허용한다. 이 폴더는 승인된 출력 경로
+  (`results/brain_extraction_pilot/`, `data/interim/soop_brain_masks/`, `data/interim/isles_brain_masks/`) 아래에
+  있어야 하고, 실행 시점에 도구 입력 파일 하나만 들어 있어야 한다.
+- 금지: Tag만으로 실행, 다른 Digest, GPU 옵션, privileged, host network, 추가 Mount, 저장소 전체·`data/raw`
+  Mount, Docker socket Mount, 환경변수 전달, device·capability 추가, 셸 실행(`shell=True`), 셸 메타문자를 포함한
+  인자.
+
+### 13.3 감사 기록의 경로 정제
+
+- **내부 실행 기록**(Host 경로 포함)은 로컬 전용이며 승인된 출력 경로 아래 `_internal/`에만 저장한다(Git 제외).
+- **공개 감사 기록**(`audit.json`, `qa.json`, `run.log`, `figure_info.json`)에는 Host 작업 경로를 `<WORKDIR>`로,
+  그 밖의 Host 경로를 `[REDACTED]`로 바꾸고 컨테이너 경로(`/data/...`)만 남긴다. 드라이브 문자 경로, 사용자 홈
+  경로, UNC 경로, 로컬 계정명, 원본 Subject ID가 남아 있으면 기록을 쓰지 않고 거부한다.
+
+### 13.4 합성 Smoke Test 결과
+
+- 합성 3D NIfTI 1건(배경 0, 뇌·두피 타원체, 합성 GT, 약 5.7° 기울어진 affine, 1.5×1.5×3.0 mm, qform·sform)으로
+  수행했다. **실제 MRI 접근은 0건**이다.
+- 첫 실행과 정식 실행기 재실행 모두 종료 코드 0, `--network none`(컨테이너 안에는 loopback만 존재),
+  shape·affine(차이 0)·orientation·spacing·qform/sform 일치, 값 {0, 1}, component 1개, 경계 접촉 0,
+  합성 GT 보존 100%(밖 voxel 0개)였다. 두 실행의 Mask는 비트 단위로 동일했다.
+- 합성 팬텀에서 두피·두개골은 Mask에 포함되지 않았고, **합성 뇌 영역의 82.1%만 Mask에 포함**되었다.
+- **합성 팬텀은 실제 해부 구조가 아니므로 이 결과는 실제 영상에서의 성능 근거가 아니다.** 82.1%라는 값은
+  뇌 조직 누락 가능성을 실제 MRI의 기준선 비교와 육안 QA로 반드시 확인해야 한다는 기술적 관찰로만 사용한다.
+
+### 13.5 다음 단계
+
+실제 SOOP 사례 실행(파일럿 1건부터)은 별도 승인 대상이다. HD-BET 설치와 GPU 이미지는 이 정책에 포함되지 않는다.

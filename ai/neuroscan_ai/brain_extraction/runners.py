@@ -22,6 +22,7 @@ from neuroscan_ai.brain_extraction import qa as qa_mod
 from neuroscan_ai.brain_extraction.audit import (
     build_audit,
     guard_public,
+    sanitize_paths,
     sha256_file,
     write_json_new,
 )
@@ -208,6 +209,9 @@ class Runner:
         except Exception as e:  # noqa: BLE001 - recorded as an execution failure
             error = type(e).__name__
             log.append(f"tool step failed: {error}")
+        # public records carry container / <WORKDIR> paths only; host paths stay internal
+        command = sanitize_paths(command, [work]) if command is not None else None
+        execution = getattr(getattr(self, "executor", None), "last_public_record", None)
         qa = qa_mod.run_qa(trace, mask_img, gt, baseline, thresholds, execution_error=error)
         status = qa["classification"]["status"]
         outputs: dict[str, str] = {}
@@ -231,6 +235,8 @@ class Runner:
             status=status,
             execution_error=error,
         )
+        if execution is not None:
+            audit["execution"] = execution
         log.append(f"status={status}")
         figure_info = _figure_info(trace, gt)
         try:
