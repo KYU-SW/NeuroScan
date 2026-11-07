@@ -84,17 +84,20 @@ def pre_run_gate(
         reasons.append("git_commit_unknown")
     if source_control.get("working_tree_clean") is not True:
         reasons.append("working_tree_not_clean")
-    missing = [k for k in REQUIRED_EXPECTED if not exp.get(k)]
+    required = [
+        k for k in REQUIRED_EXPECTED if k != "checkpoint_sha256" or plan.checkpoint is not None
+    ]
+    missing = [k for k in required if not exp.get(k)]
     if missing:
         reasons.append("expected_hashes_not_declared:" + ",".join(missing))
     actual = {
         "config_sha256_lf": sha256_text_lf(plan.config),
         "split_sha256_lf": sha256_text_lf(plan.split_file),
-        "checkpoint_sha256": sha256_file(plan.checkpoint),
+        "checkpoint_sha256": sha256_file(plan.checkpoint) if plan.checkpoint else None,
         "package_lock_sha256_lf": environment.get("package_lock_sha256_lf"),
-        "alias_list_sha256": alias_list_sha256(plan.aliases, CASE_KEY_POLICY),
+        "alias_list_sha256": alias_list_sha256(plan.all_aliases, CASE_KEY_POLICY),
     }
-    for k in REQUIRED_EXPECTED:
+    for k in required:
         if exp.get(k) and exp[k] != actual[k]:
             reasons.append(f"{k}_mismatch")
     if len(plan.aliases) != plan.allowed_case_count:
@@ -120,15 +123,15 @@ def pre_run_gate(
             purpose=plan.purpose,
             dataset_id=plan.dataset_id,
             split_name=plan.split_name,
-            aliases=list(plan.aliases),
+            aliases=list(plan.all_aliases),
             config=plan.config,
             split=plan.split_file,
             checkpoint=plan.checkpoint,
             policies=dict(plan.policies),
             model={"architecture_id": plan.model_id},
             access={
-                f"{plan.split_name}_cases": len(plan.aliases),
-                "allowed_splits": [plan.split_name],
+                **{f"{s}_cases": n for s, n in plan.split_counts.items()},
+                "allowed_splits": sorted(plan.split_counts),
             },
         )
         try:
@@ -149,7 +152,7 @@ def pre_run_gate(
             (run_dir / REJECTION_NAME).write_text(json.dumps(body, indent=2), encoding="utf-8")
         return GateResult(REJECTED, tuple(reasons), run_dir)
     run_dir.mkdir(parents=True)
-    write_manifest(run_dir / PRE_RUN_NAME, pre, forbidden_ids, plan.aliases)
+    write_manifest(run_dir / PRE_RUN_NAME, pre, forbidden_ids, plan.all_aliases)
     return GateResult(APPROVED, (), run_dir, canonical_json_sha256(pre), pre)
 
 

@@ -1,0 +1,53 @@
+# NeuroScan v2 2D smoke test (NOT a performance experiment).
+# Fixed values for the first real run through the manifest-gated run control. Nothing here is
+# tuned; the threshold is a fixed smoke value and is never optimised.
+
+run_name: v2_2d_smoke
+stage: train
+dataset_id: isles2022
+device: cuda_if_available
+
+model:
+  id: neuroscan_v2_2d_smoke_v1
+  base_channels: 8
+  pretrained_weights: null
+
+data:
+  split_source: data/splits/split_v1_seed42.json   # read-only; aliases written under results/v2_runs/_internal/
+  selection_salt: "neuroscan-v2-smoke-v1:"           # SHA-256(salt + case_id), smallest first
+  n_train: 4
+  n_val: 2
+  train_alias_prefix: v2-smoke-train-
+  val_alias_prefix: v2-smoke-val-
+
+training:
+  epochs: 1
+  seed: 42
+  batch_size: 8
+  dataloader_workers: 0
+  optimizer: adam
+  learning_rate: 0.001
+  weight_decay: 0.0
+  loss: bce_with_logits+soft_dice
+
+inference:
+  threshold: 0.5
+  threshold_source: smoke_test_fixed_not_validated
+  pad_multiple: 16
+  batch_size: 8
+
+determinism:
+  precision: fp32
+  automatic_mixed_precision: false
+  tf32_matmul: false
+  tf32_convolution: false
+  torch_deterministic_algorithms: true
+  cudnn_deterministic: true
+  cudnn_benchmark: false
+
+policies:
+  preprocessing: preprocess_v2_isles_smoke_v1
+  inference: v2_2d_slicewise_sigmoid_v1
+  threshold: fixed_0.5_smoke_not_validated
+  brain_mask: skull_stripped_background_v2_smoke
+  combination: single_model_2d

@@ -66,7 +66,8 @@ class MockRunner:
         if "raise" in self.faults:
             raise RuntimeError("mock runner failure")
         run_dir = gate.run_dir
-        keys = sorted(case_keys(plan.aliases).values())
+        all_keys = case_keys(plan.all_aliases)
+        keys = sorted(all_keys[a] for a in plan.output_aliases)
         totals = {"ungated_voxels": 0, "gated_voxels": 0}
         for i, key in enumerate(keys):
             prob, mask = self._arrays(i)

@@ -1,5 +1,9 @@
 """RunPlan: what a v2 run is allowed to do. Refused at construction when it would touch a split the
-stage may not use, the test / final-test split, or a SOOP pilot case."""
+stage may not use, the test / final-test split, or a SOOP pilot case.
+
+A ``train`` run may also declare validation cases from the ``val`` split (``validation_aliases``);
+its per-case outputs are then produced for those validation cases only.
+"""
 
 from __future__ import annotations
 
@@ -22,7 +26,8 @@ VALIDATION_OUTPUTS = (
     "patient_metrics",
     "aggregate_results",
 )
-TRAIN_OUTPUTS = ("checkpoint", "training_history", "validation_metrics", "selected_threshold")
+TRAIN_OUTPUTS = ("checkpoint", "training_history", "validation_metrics", "threshold_record")
+VALIDATION_SPLIT = "val"
 
 
 class RunPlanError(ValueError):
@@ -39,7 +44,7 @@ class RunPlan:
     aliases: tuple[str, ...]
     allowed_case_count: int
     model_id: str
-    checkpoint: Path
+    checkpoint: Path | None  # input checkpoint; None only for a train stage
     config: Path
     split_file: Path
     policies: dict[str, str]
@@ -47,10 +52,28 @@ class RunPlan:
     approved_splits: tuple[str, ...] = ()  # inference / external validation: explicit approval
     expected: dict[str, Any] = field(default_factory=dict)  # hashes / versions the gate must see
     excluded_aliases: tuple[str, ...] = ()  # e.g. permanently excluded cases
+    validation_aliases: tuple[str, ...] = ()  # train stage only: cases from the val split
 
     @property
     def required_outputs(self) -> tuple[str, ...]:
-        return TRAIN_OUTPUTS if self.stage == "train" else VALIDATION_OUTPUTS
+        return TRAIN_OUTPUTS + VALIDATION_OUTPUTS if self.stage == "train" else VALIDATION_OUTPUTS
+
+    @property
+    def all_aliases(self) -> tuple[str, ...]:
+        """Every case the run may read (manifest alias list and case keys)."""
+        return self.aliases + self.validation_aliases
+
+    @property
+    def output_aliases(self) -> tuple[str, ...]:
+        """Cases that get per-case outputs."""
+        return self.validation_aliases if self.stage == "train" else self.aliases
+
+    @property
+    def split_counts(self) -> dict[str, int]:
+        counts = {self.split_name: len(self.aliases)}
+        if self.validation_aliases:
+            counts[VALIDATION_SPLIT] = len(self.validation_aliases)
+        return counts
 
     @property
     def run_dir(self) -> Path:
@@ -68,6 +91,7 @@ def build_plan(**kw: Any) -> RunPlan:
     kw["aliases"] = tuple(kw.get("aliases", ()))
     kw["approved_splits"] = tuple(kw.get("approved_splits", ()))
     kw["excluded_aliases"] = tuple(kw.get("excluded_aliases", ()))
+    kw["validation_aliases"] = tuple(kw.get("validation_aliases", ()))
     plan = RunPlan(**kw)
     if not re.match(r"^[a-z0-9][a-z0-9._-]{2,63}$", plan.run_id):
         raise RunPlanError("run_id must be lower-case [a-z0-9._-], 3-64 chars")
@@ -83,9 +107,15 @@ def build_plan(**kw: Any) -> RunPlan:
         raise RunPlanError(f"missing policy IDs: {missing}")
     if not plan.aliases or len(plan.aliases) != plan.allowed_case_count:
         raise RunPlanError("case list size differs from allowed_case_count")
-    if len(set(plan.aliases)) != len(plan.aliases):
+    if plan.checkpoint is None and plan.stage != "train":
+        raise RunPlanError("an input checkpoint is required outside the train stage")
+    if plan.validation_aliases and plan.stage != "train":
+        raise RunPlanError("validation_aliases are only allowed for the train stage")
+    if plan.stage == "train" and not plan.validation_aliases:
+        raise RunPlanError("a train run must declare validation cases from the val split")
+    if len(set(plan.all_aliases)) != len(plan.all_aliases):
         raise RunPlanError("duplicate case aliases")
-    blocked = [a for a in plan.aliases if SOOP_PILOT.match(a) or a in plan.excluded_aliases]
+    blocked = [a for a in plan.all_aliases if SOOP_PILOT.match(a) or a in plan.excluded_aliases]
     if blocked:
         raise RunPlanError(f"{len(blocked)} permanently excluded case(s) in the plan")
     members = _split_members(plan.split_file)
@@ -96,4 +126,13 @@ def build_plan(**kw: Any) -> RunPlan:
     for other, ids in members.items():
         if other != plan.split_name and set(plan.aliases) & ids:
             raise RunPlanError("plan contains cases that also belong to another split")
+    if plan.validation_aliases:
+        if (
+            VALIDATION_SPLIT not in members
+            or set(plan.validation_aliases) - members[VALIDATION_SPLIT]
+        ):
+            raise RunPlanError("validation cases must belong to the val split")
+        for other, ids in members.items():
+            if other != VALIDATION_SPLIT and set(plan.validation_aliases) & ids:
+                raise RunPlanError("validation cases also belong to another split")
     return plan

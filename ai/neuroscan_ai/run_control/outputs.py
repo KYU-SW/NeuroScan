@@ -16,6 +16,13 @@ IMAGE_KINDS = ("probability_maps", "ungated_predictions", "brain_masks", "gated_
 METRIC_KIND = "patient_metrics"
 AGGREGATE_KIND = "aggregate_results"
 AGGREGATE_LABEL = "aggregate"
+# train-stage run-level outputs (recorded under aggregate_results with these labels)
+TRAINING_FILES = {
+    "checkpoint": "training/checkpoint.pt",
+    "training_history": "training/training_history.json",
+    "validation_metrics": "training/validation_metrics.json",
+    "threshold_record": "training/threshold_record.json",
+}
 
 
 def case_path(run_dir: Path, kind: str, case_key: str) -> Path:
@@ -25,6 +32,15 @@ def case_path(run_dir: Path, kind: str, case_key: str) -> Path:
 
 def aggregate_path(run_dir: Path) -> Path:
     return Path(run_dir) / AGGREGATE_KIND / f"{AGGREGATE_LABEL}.json"
+
+
+def run_output_path(run_dir: Path, label: str) -> Path:
+    """Path of a run-level output label (``aggregate`` or a training output)."""
+    if label == AGGREGATE_LABEL:
+        return aggregate_path(run_dir)
+    if label not in TRAINING_FILES:
+        raise ValueError(f"unknown run-level output '{label}'")
+    return Path(run_dir) / TRAINING_FILES[label]
 
 
 def save_image(path: Path, data: np.ndarray, affine: np.ndarray) -> None:

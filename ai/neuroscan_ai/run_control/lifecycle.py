@@ -30,9 +30,11 @@ from neuroscan_ai.run_control.outputs import (
     AGGREGATE_LABEL,
     IMAGE_KINDS,
     METRIC_KIND,
+    TRAINING_FILES,
     aggregate_path,
     case_path,
     check_case,
+    run_output_path,
 )
 from neuroscan_ai.run_control.plan import RunPlan
 
@@ -80,6 +82,10 @@ def run_controlled(
     if determinism.get("seed") is not None and determinism.get("seed") != runner_seed:
         raise ValueError("declared determinism seed differs from the runner seed")
     determinism = {**determinism, "seed": runner_seed}
+    # a runner that controls framework settings applies them now, so both manifests record the
+    # state the run actually uses (not the state before the runner configured it)
+    if hasattr(runner, "apply_determinism"):
+        determinism = {**determinism, **runner.apply_determinism(), "seed": runner_seed}
     gate = pre_run_gate(
         plan,
         repo_root=repo_root,
@@ -98,15 +104,15 @@ def run_controlled(
         runner.run(gate, plan)
     except Exception as e:  # noqa: BLE001 - recorded, never re-raised past the audit trail
         failed_stage, error_type = "runner", type(e).__name__
-        error_message = _safe_message(str(e), plan.aliases, forbidden_ids)
+        error_message = _safe_message(str(e), plan.all_aliases, forbidden_ids)
     ended = _now()
 
-    keys = case_keys(plan.aliases)
+    keys = case_keys(plan.all_aliases)
     generated: dict[str, dict[str, Path]] = {k: {} for k in (*IMAGE_KINDS, METRIC_KIND)}
     missing: list[str] = []
     check_errors: list[str] = []
     case_ok = 0
-    for alias, key in sorted(keys.items(), key=lambda kv: kv[1]):
+    for alias, key in sorted(((a, keys[a]) for a in plan.output_aliases), key=lambda kv: kv[1]):
         present = True
         for kind in (*IMAGE_KINDS, METRIC_KIND):
             p = case_path(gate.run_dir, kind, key)
@@ -124,6 +130,13 @@ def run_controlled(
         outputs[AGGREGATE_KIND] = {AGGREGATE_LABEL: agg}
     else:
         missing.append(f"run:{AGGREGATE_KIND}")
+    if plan.stage == "train":  # checkpoint, history, validation metrics, threshold record
+        for label in TRAINING_FILES:
+            p = run_output_path(gate.run_dir, label)
+            if p.is_file():
+                outputs.setdefault(AGGREGATE_KIND, {})[label] = p
+            else:
+                missing.append(f"run:{label}")
 
     if failed_stage:
         status = FAILED_RUNNER
@@ -148,13 +161,13 @@ def run_controlled(
     access = dict(gate.pre_run["access"]) if gate.pre_run else {}
     post = build_post_run(
         gate.pre_run,
-        aliases=plan.aliases,
+        aliases=plan.all_aliases,
         started_utc=started,
         ended_utc=ended,
         status=status,
         exit_code=0 if status == COMPLETED else 1,
         cases_succeeded=case_ok,
-        cases_failed=len(keys) - case_ok,
+        cases_failed=len(plan.output_aliases) - case_ok,
         outputs=outputs,
         environment=environment,
         determinism=determinism,
@@ -164,7 +177,7 @@ def run_controlled(
     )
     if not is_linked(gate.pre_run, post):
         status = FAILED_MANIFEST
-    write_manifest(gate.run_dir / POST_RUN_NAME, post, forbidden_ids, plan.aliases)
+    write_manifest(gate.run_dir / POST_RUN_NAME, post, forbidden_ids, plan.all_aliases)
     seal = gate.run_dir / SEAL_NAME
     if seal.exists():
         raise FileExistsError("seal exists; refusing to overwrite")
@@ -207,9 +220,10 @@ def verify_run(run_dir: Path) -> dict[str, Any]:
         return {"ok": False, "problems": [f"manifest_unreadable:{type(e).__name__}"]}
     for kind, entries in post.get("outputs", {}).items():
         for key, recorded in entries.items():
-            path = (
-                aggregate_path(run_dir) if kind == AGGREGATE_KIND else case_path(run_dir, kind, key)
-            )
+            if kind == AGGREGATE_KIND:
+                path = run_output_path(run_dir, key)
+            else:
+                path = case_path(run_dir, kind, key)
             if not path.is_file():
                 problems.append(f"output_missing:{kind}:{key}")
             elif sha256_file(path) != recorded:
