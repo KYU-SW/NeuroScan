@@ -60,7 +60,10 @@ Validation·Inference: 사례별 Probability Map, Ungated Binary, Brain Mask, Ga
 JSON, 실행 단위 Aggregate JSON, Post-run Manifest. **Probability·Ungated·Gated·Brain Mask는 같은
 실행에서 함께 저장한다.** 하나라도 없으면 `failed_incomplete_outputs`.
 
-Train(아직 미구현): Checkpoint, 학습 History, Validation Metric, 선택 Threshold 기록, Post-run Manifest.
+Train: Checkpoint, 학습 History, Validation Metric, 선택 Threshold 기록, Post-run Manifest. 필수 학습
+산출물은 Runner의 `training_outputs` Profile로 정한다. `smoke_v1`(기본)은 위 4종이고, `baseline_v1`은
+여기에 `last_checkpoint`·`selection_record`·`threshold_search`·`preprocessing_audit`를 더한다.
+Profile은 Gate 전에 확인하며(알 수 없으면 거부), Post-run 기록의 `required_outputs`에 반영된다.
 
 ## 6. 출력 관계 검사
 

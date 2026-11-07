@@ -24,6 +24,26 @@ TRAINING_FILES = {
     "threshold_record": "training/threshold_record.json",
 }
 
+# v2 baseline training adds these labels (smoke runs keep TRAINING_FILES only)
+BASELINE_TRAINING_FILES = {
+    **TRAINING_FILES,
+    "last_checkpoint": "training/last_checkpoint.pt",
+    "selection_record": "training/selection_record.json",
+    "threshold_search": "training/threshold_search.json",
+    "preprocessing_audit": "training/preprocessing_audit.json",
+}
+TRAINING_OUTPUT_PROFILES = {
+    "smoke_v1": tuple(TRAINING_FILES),
+    "baseline_v1": tuple(BASELINE_TRAINING_FILES),
+}
+
+
+def training_output_labels(profile: str) -> tuple[str, ...]:
+    """Required run-level training outputs for a runner's output profile."""
+    if profile not in TRAINING_OUTPUT_PROFILES:
+        raise ValueError(f"unknown training output profile '{profile}'")
+    return TRAINING_OUTPUT_PROFILES[profile]
+
 
 def case_path(run_dir: Path, kind: str, case_key: str) -> Path:
     ext = ".json" if kind == METRIC_KIND else ".nii.gz"
@@ -38,9 +58,9 @@ def run_output_path(run_dir: Path, label: str) -> Path:
     """Path of a run-level output label (``aggregate`` or a training output)."""
     if label == AGGREGATE_LABEL:
         return aggregate_path(run_dir)
-    if label not in TRAINING_FILES:
+    if label not in BASELINE_TRAINING_FILES:
         raise ValueError(f"unknown run-level output '{label}'")
-    return Path(run_dir) / TRAINING_FILES[label]
+    return Path(run_dir) / BASELINE_TRAINING_FILES[label]
 
 
 def save_image(path: Path, data: np.ndarray, affine: np.ndarray) -> None:

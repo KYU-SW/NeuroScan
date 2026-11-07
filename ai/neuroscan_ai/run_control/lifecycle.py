@@ -30,13 +30,13 @@ from neuroscan_ai.run_control.outputs import (
     AGGREGATE_LABEL,
     IMAGE_KINDS,
     METRIC_KIND,
-    TRAINING_FILES,
     aggregate_path,
     case_path,
     check_case,
     run_output_path,
+    training_output_labels,
 )
-from neuroscan_ai.run_control.plan import RunPlan
+from neuroscan_ai.run_control.plan import VALIDATION_OUTPUTS, RunPlan
 
 POST_RUN_NAME = "post_run_manifest.json"
 SEAL_NAME = "post_run_manifest.sha256"  # canonical JSON SHA-256 of the post-run manifest
@@ -65,6 +65,13 @@ def _safe_message(msg: str, aliases: Iterable[str], forbidden_ids: Iterable[str]
     return msg[:200]
 
 
+def _required_outputs(plan: RunPlan, training_labels: tuple[str, ...]) -> tuple[str, ...]:
+    """Plan outputs with the train-stage labels taken from the runner's output profile."""
+    if plan.stage != "train":
+        return plan.required_outputs
+    return training_labels + VALIDATION_OUTPUTS
+
+
 def run_controlled(
     plan: RunPlan,
     runner: Runner,
@@ -77,6 +84,8 @@ def run_controlled(
     forbidden_ids: Iterable[str] = (),
 ) -> dict[str, Any]:
     forbidden_ids = tuple(forbidden_ids)
+    # required training outputs are fixed before the gate (unknown profile -> refused)
+    training_labels = training_output_labels(getattr(runner, "training_outputs", "smoke_v1"))
     # the seed actually used by the runner is what both manifests record
     runner_seed = getattr(runner, "seed", None)
     if determinism.get("seed") is not None and determinism.get("seed") != runner_seed:
@@ -131,7 +140,7 @@ def run_controlled(
     else:
         missing.append(f"run:{AGGREGATE_KIND}")
     if plan.stage == "train":  # checkpoint, history, validation metrics, threshold record
-        for label in TRAINING_FILES:
+        for label in training_labels:
             p = run_output_path(gate.run_dir, label)
             if p.is_file():
                 outputs.setdefault(AGGREGATE_KIND, {})[label] = p
@@ -156,7 +165,7 @@ def run_controlled(
         "generated_output_files": sum(len(v) for v in outputs.values()),
         "accessed_splits": [plan.split_name],
         "runner_kind": getattr(runner, "kind", type(runner).__name__),
-        "required_outputs": list(plan.required_outputs),
+        "required_outputs": list(_required_outputs(plan, training_labels)),
     }
     access = dict(gate.pre_run["access"]) if gate.pre_run else {}
     post = build_post_run(
