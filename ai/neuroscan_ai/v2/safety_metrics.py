@@ -14,6 +14,12 @@ Four separate false-positive-type measures (never interchangeable; none is a cli
   candidates, predicted components sharing no voxel with GT;
 - ``oversegmentation_volume_ml``: voxels outside GT inside predicted components that DO overlap GT.
 The first equals the sum of the other two volumes. No FP threshold is optimised here.
+
+Slice-thickness subgroup (analysis only, ``isles_v1_qa_thick_subgroup_3mm``): thin = effective z
+spacing <= 3.0 mm, thick = > 3.0 mm. This is NOT the provisional component-safety (external
+dataset) thick-slice warning (effective z > 5.0 mm or slice thickness >= 5.0 mm,
+``component_analysis.warnings``); the two
+rules are never used interchangeably and neither is a clinical threshold.
 """
 
 from __future__ import annotations
@@ -23,12 +29,34 @@ from typing import Any
 import numpy as np
 
 from neuroscan_ai.component_analysis.extraction import extract_components
-from neuroscan_ai.component_analysis.warnings import THICK_Z_SPACING_MM
-from neuroscan_ai.v2.geometry import as_binary_mask, validate_grid
+from neuroscan_ai.component_analysis.warnings import (
+    THICK_SLICE_THICKNESS_MM,
+    THICK_Z_SPACING_MM,
+)
+from neuroscan_ai.v2.geometry import as_binary_mask, decode_binary_mask, validate_grid
 
 MATCH_RULE = "overlap_ge_1_voxel_exploratory_not_clinical_tp"
 SMALL_LESION_BINS_ML = (0.1, 0.5, 1.0)  # recall of GT components with volume < bin
-THICK_SLICE_ABOVE_MM = THICK_Z_SPACING_MM  # provisional, shared with component safety stage 1
+SLICE_SUBGROUP_POLICY = "isles_v1_qa_thick_subgroup_3mm"
+THICK_SUBGROUP_ABOVE_MM = 3.0  # ISLES analysis subgroup (not a clinical threshold)
+
+
+def slice_subgroup(z_spacing_mm: float, slice_thickness_mm: float | None = None) -> dict:
+    """ISLES thin / thick subgroup plus the SEPARATE provisional component-safety warning flag."""
+    z = float(z_spacing_mm)
+    warn = z > THICK_Z_SPACING_MM or (
+        slice_thickness_mm is not None and float(slice_thickness_mm) >= THICK_SLICE_THICKNESS_MM
+    )
+    return {
+        "policy": SLICE_SUBGROUP_POLICY,
+        "effective_z_spacing_mm": round(z, 6),
+        "slice_group": "thick" if z > THICK_SUBGROUP_ABOVE_MM else "thin",
+        "component_safety_provisional_thick_warning": bool(warn),
+        "component_safety_provisional_rule": (
+            "effective z > 5.0 mm or slice thickness >= 5.0 mm (provisional, separate policy)"
+        ),
+        "slice_thickness_mm": slice_thickness_mm,
+    }
 
 
 def voxel_volume_ml(affine: np.ndarray) -> float:
@@ -99,7 +127,7 @@ def case_metrics(
     pred: np.ndarray, gt: np.ndarray, affine: np.ndarray, output: str = "ungated"
 ) -> dict[str, Any]:
     """Metrics for one case on the original grid (``pred`` and ``gt`` must be 0/1)."""
-    p, g = as_binary_mask(pred, "prediction"), as_binary_mask(gt, "GT")
+    p, g = as_binary_mask(pred, "prediction"), decode_binary_mask(gt, "GT")[0]
     if p.shape != g.shape:
         raise ValueError("prediction and GT shapes differ")
     grid = validate_grid(p.shape, affine)
@@ -124,7 +152,8 @@ def case_metrics(
         "missed_gt_count": len(missed),
         "missed_gt_volumes_ml": [c["volume_ml"] for c in missed],
         "z_spacing_mm": round(float(z), 6),
-        "slice_group": "thick" if z > THICK_SLICE_ABOVE_MM else "thin",
+        "slice_group": slice_subgroup(z)["slice_group"],
+        "slice_subgroup_policy": SLICE_SUBGROUP_POLICY,
         "components": m,
     }
 

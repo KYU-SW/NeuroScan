@@ -410,14 +410,52 @@ def test_no_resampling_or_brain_extraction_is_called(tmp_path, monkeypatch):
     )
 
 
-FROZEN = (
+# v1 freeze scope: a FIXED list of the v1 assets that exist in the repository (no guessed paths).
+# configs/v2/**, ai/neuroscan_ai/v2/**, v2 docs and v2 tests are outside the v1 freeze.
+V1_FROZEN_CODE = (
+    "ai/neuroscan_ai/analysis",
     "ai/neuroscan_ai/final_test",
-    "ai/neuroscan_ai/preprocessing",
     "ai/neuroscan_ai/inference",
+    "ai/neuroscan_ai/preprocessing",
     "ai/neuroscan_ai/training",
-    "configs",
-    "data/splits",
 )
+V1_FROZEN_CONFIGS = (
+    "configs/25d_baseline.yaml",
+    "configs/25d_tiny_overfit.yaml",
+    "configs/2d_baseline.yaml",
+    "configs/2d_tiny_overfit.yaml",
+    "configs/api_v1.yaml",
+    "configs/final_test_v1.yaml",  # Final Test manifest (checkpoint hashes, protocol)
+    "configs/inference_v1.yaml",
+    "configs/preprocess_v1.yaml",
+)
+V1_FROZEN_SPLITS = ("data/splits/split_v1_seed42.json",)
+FROZEN = V1_FROZEN_CODE + V1_FROZEN_CONFIGS + V1_FROZEN_SPLITS
+V1_FREEZE_EXCLUDED = ("configs/v2", "ai/neuroscan_ai/v2")
+TEST_LOCK_TAG = "neuroscan-v1.0.0-test-locked"
+TEST_LOCK_COMMIT = "692b04efe625bce063a83f8f33bfea0bea453137"
+
+
+def frozen_violations(changed: list[str], frozen: tuple[str, ...] = FROZEN) -> list[str]:
+    """Changed paths that fall inside the v1 freeze (exact file or below a frozen directory)."""
+    norm = [c.replace("\\", "/") for c in changed]
+    return [c for c in norm if any(c == f or c.startswith(f + "/") for f in frozen)]
+
+
+def unprotected_v1_configs(config_files: list[str]) -> list[str]:
+    """Top-level configs/ files (v1) that are missing from V1_FROZEN_CONFIGS."""
+    return sorted(
+        f
+        for f in config_files
+        if f.startswith("configs/")
+        and f.count("/") == 1
+        and not f.endswith(".gitkeep")
+        and f not in V1_FROZEN_CONFIGS
+    )
+
+
+def lock_tag_violation(actual_commit: str) -> bool:
+    return actual_commit.strip() != TEST_LOCK_COMMIT
 
 
 def _git(*args):
@@ -428,8 +466,90 @@ def _git(*args):
 
 
 def test_frozen_v1_code_and_configs_are_unmodified():
-    changed = _git("diff", "--name-only", "HEAD", "--", *FROZEN).stdout.split()
-    assert changed == []
+    print("v1 freeze targets:", *FROZEN, sep="\n  ")
+    tracked = _git("diff", "--name-only", "HEAD", "--", *FROZEN).stdout.split()
+    untracked = _git("ls-files", "--others", "--exclude-standard", "--", *FROZEN).stdout.split()
+    assert frozen_violations(tracked + untracked) == []
+
+
+def test_v1_freeze_targets_exist_and_are_tracked():
+    for path in FROZEN:
+        assert (REPO / path).exists(), path
+        assert _git("ls-files", "--", path).stdout.strip(), f"{path} is not tracked"
+
+
+def test_v1_freeze_detects_v1_config_change():
+    assert frozen_violations(["configs/2d_baseline.yaml"]) == ["configs/2d_baseline.yaml"]
+    assert frozen_violations(["configs/25d_baseline.yaml", "configs/preprocess_v1.yaml"])
+    assert frozen_violations(["configs\\final_test_v1.yaml"])  # Windows separators
+    assert frozen_violations(["ai/neuroscan_ai/training/loop.py"])
+
+
+def test_v1_freeze_detects_v1_inference_config_change():
+    assert frozen_violations(["configs/inference_v1.yaml"]) == ["configs/inference_v1.yaml"]
+    assert frozen_violations(["ai/neuroscan_ai/inference/predict.py"])
+
+
+def test_v1_freeze_detects_split_change():
+    assert frozen_violations(["data/splits/split_v1_seed42.json"])
+
+
+def test_v2_changes_are_not_v1_freeze_violations():
+    v2 = [
+        "configs/v2/2d_baseline.yaml",
+        "configs/v2/new_profile.yaml",
+        "ai/neuroscan_ai/v2/geometry.py",
+        "docs/v2_2d_baseline_protocol.md",
+        "tests/test_v2_baseline_decode_grid.py",
+    ]
+    assert frozen_violations(v2) == []
+    assert not any(f.startswith(V1_FREEZE_EXCLUDED) for f in FROZEN)
+    # configs/2d_baseline.yaml.bak or configs/v2x are not mistaken for prefixes either way
+    assert frozen_violations(["configs/v2x/a.yaml"]) == []
+
+
+def test_test_lock_tag_change_detected():
+    assert lock_tag_violation("0" * 40)
+    assert not lock_tag_violation(TEST_LOCK_COMMIT)
+    actual = _git("rev-parse", f"{TEST_LOCK_TAG}^{{commit}}").stdout
+    assert not lock_tag_violation(actual)
+
+
+def test_v1_freeze_omission_detected():
+    listed = _git("ls-files", "--", "configs").stdout.split()
+    on_disk = [p.relative_to(REPO).as_posix() for p in (REPO / "configs").iterdir() if p.is_file()]
+    assert unprotected_v1_configs(listed + on_disk) == []
+    assert unprotected_v1_configs(listed + ["configs/new_v1_config.yaml"]) == [
+        "configs/new_v1_config.yaml"
+    ]
+    assert unprotected_v1_configs(["configs/v2/2d_baseline.yaml"]) == []
+
+
+def test_v1_model_checkpoints_match_final_test_manifest():
+    import hashlib
+
+    import yaml
+
+    manifest = yaml.safe_load((REPO / "configs/final_test_v1.yaml").read_text(encoding="utf-8"))
+    found = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            if "checkpoint" in node and "checkpoint_sha256" in node:
+                found.append((node["checkpoint"], node["checkpoint_sha256"]))
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(manifest)
+    assert len(found) == 2
+    present = [(c, h) for c, h in found if (REPO / c).is_file()]
+    if not present:
+        pytest.skip("v1 model checkpoints are not present in this checkout (git-ignored)")
+    for ckpt, expected in present:
+        assert hashlib.sha256((REPO / ckpt).read_bytes()).hexdigest() == expected, ckpt
 
 
 # 25 output paths are git-ignored ---------------------------------------------------------------

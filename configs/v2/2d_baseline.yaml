@@ -29,10 +29,23 @@ data:
 
 preprocessing:
   policy: preprocess_v2_isles_1mm_inplane_v1
-  inplane_spacing_mm: 1.0
   slice_axis: 2
   slice_axis_resampled: false
-  inplane_size_rule: ceil(size * spacing / 1.0)
+  target_grid:            # checked against code by baseline_preprocess.validate_policy_config
+    inplane_spacing_mm: [1.0, 1.0]
+    preserve_z_spacing: true
+    size_policy: [integer_snap_if_close, otherwise_ceil]   # raw = size * spacing / 1.0
+    integer_snap_rtol: 1.0e-6
+    integer_snap_atol: 1.0e-6
+  gt_decode:
+    policy_id: binary_mask_decode_v1_atol_1e_6
+    decoded_values: true            # NIfTI scaling applied
+    use_get_unscaled: false
+    use_threshold_binarization: false
+    zero_atol: 1.0e-6
+    one_atol: 1.0e-6
+    reject_other_values: true
+    reject_nan_inf: true
   grid_alignment: voxel0_outer_corner_fixed_direction_cosines_kept
   interpolation: {dwi: linear, adc: linear, gt: nearest, brain_mask: nearest}
   brain_mask_grid: original
@@ -86,7 +99,16 @@ safety_metrics:
   no_gt_overlap_component_volume_ml: components_without_gt_overlap
   no_gt_overlap_component_count: components_without_gt_overlap
   oversegmentation_volume_ml: outside_gt_in_gt_overlapping_components
-  thick_slice_above_mm: 5.0
+  thick_slice_policies:    # two separate rules; never merged or used interchangeably
+    isles_subgroup:
+      policy_id: isles_v1_qa_thick_subgroup_3mm
+      effective_z_spacing_mm_gt: 3.0
+      purpose: analysis_subgroup
+    soop_provisional_warning:
+      policy_id: soop_provisional_thick_warning_5mm
+      effective_z_spacing_mm_gt: 5.0
+      slice_thickness_mm_gte: 5.0
+      provisional: true
 
 training:                 # pending approval
   epochs: null

@@ -4,7 +4,10 @@ Array axes 0 and 1 are in-plane; axis 2 is the slice axis (kept unchanged).
 
 Target grid (one grid per case, shared by DWI, ADC, GT and brain mask):
 - direction cosines of every axis are kept (oblique affines stay oblique; no reorientation);
-- in-plane spacing becomes ``target_mm`` (1.0); new in-plane size = ceil(size * spacing / target);
+- in-plane spacing becomes ``target_mm`` (1.0); new in-plane size from
+  raw = size * spacing / target: round(raw) when raw is within rtol 1e-6 / atol 1e-6 of that
+  integer (header floating-point noise, e.g. 2.00000006 mm x 112 -> 224), otherwise ceil(raw)
+  so that the field of view is never cut (``inplane_target_sizes`` records every axis);
 - slice axis: spacing, size and position unchanged;
 - corner alignment: the outer edge of voxel 0 coincides with the original grid, so the model grid
   covers the original field of view (it may extend by < 1 target voxel at the far edge).
@@ -26,12 +29,24 @@ from nibabel.orientations import aff2axcodes
 from scipy import ndimage
 
 TARGET_INPLANE_MM = 1.0
+TARGET_SIZE_SNAP_RTOL = 1e-6
+TARGET_SIZE_SNAP_ATOL = 1e-6
+BINARY_DECODE_POLICY = "binary_mask_decode_v1_atol_1e_6"
+BINARY_DECODE_ATOL = 1e-6
 AFFINE_ATOL_MM = 1e-3
 IDENTITY_ATOL = 1e-6
 
 
 class GeometryError(ValueError):
     """Invalid or inconsistent grid geometry."""
+
+
+class BinaryDecodeError(GeometryError):
+    """A decoded label array holds values outside 0 / 1 +- tolerance (``record`` has details)."""
+
+    def __init__(self, message: str, record: dict):
+        super().__init__(message)
+        self.record = record
 
 
 @dataclass(frozen=True)
@@ -76,9 +91,37 @@ def same_grid(a: Grid, b: Grid, atol: float = AFFINE_ATOL_MM) -> bool:
     return a.shape == b.shape and bool(np.allclose(a.affine, b.affine, atol=atol))
 
 
-def inplane_target_grid(grid: Grid, target_mm: float = TARGET_INPLANE_MM) -> Grid:
+def inplane_target_sizes(grid: Grid, target_mm: float = TARGET_INPLANE_MM) -> list[dict]:
+    """Per in-plane axis target size with the integer-snap rule (see module docstring)."""
     if target_mm <= 0:
         raise GeometryError("target spacing must be positive")
+    out = []
+    for ax in (0, 1):
+        sp = grid.spacing[ax]
+        raw = grid.shape[ax] * sp / target_mm
+        nearest = int(round(raw))
+        snap = bool(
+            np.isclose(raw, nearest, rtol=TARGET_SIZE_SNAP_RTOL, atol=TARGET_SIZE_SNAP_ATOL)
+        )
+        final = max(1, nearest if snap else math.ceil(raw))
+        out.append(
+            {
+                "axis": ax,
+                "raw_target_size": round(float(raw), 9),
+                "nearest_integer_size": nearest,
+                "final_target_size": int(final),
+                "integer_snap_applied": snap,
+                "snap_changed_size_vs_ceil": bool(final != max(1, math.ceil(raw))),
+                "original_coverage_mm": round(float(grid.shape[ax] * sp), 6),
+                "target_coverage_mm": round(float(final * target_mm), 6),
+                "coverage_difference_mm": round(float(final * target_mm - grid.shape[ax] * sp), 6),
+            }
+        )
+    return out
+
+
+def inplane_target_grid(grid: Grid, target_mm: float = TARGET_INPLANE_MM) -> Grid:
+    sizes = inplane_target_sizes(grid, target_mm)
     m = grid.affine[:3, :3]
     sp = np.asarray(grid.spacing)
     new_m = m.copy()
@@ -87,8 +130,7 @@ def inplane_target_grid(grid: Grid, target_mm: float = TARGET_INPLANE_MM) -> Gri
     for ax in (0, 1):
         direction = m[:, ax] / sp[ax]
         new_m[:, ax] = direction * target_mm
-        # ceil with a small tolerance so 0.5 mm x 2N stays exactly N voxels
-        shape[ax] = max(1, math.ceil(grid.shape[ax] * sp[ax] / target_mm - 1e-6))
+        shape[ax] = sizes[ax]["final_target_size"]
         # voxel-0 outer edge stays fixed: centre moves by half the spacing difference
         origin = origin + 0.5 * (target_mm - sp[ax]) * direction
     aff = np.eye(4)
@@ -132,6 +174,41 @@ def as_binary_mask(mask: np.ndarray, name: str) -> np.ndarray:
     if not set(np.unique(arr).tolist()) <= {0, 1}:
         raise GeometryError(f"{name} must contain only labels 0 and 1")
     return arr == 1
+
+
+def decode_binary_mask(
+    values: np.ndarray, name: str = "GT", atol: float = BINARY_DECODE_ATOL
+) -> tuple[np.ndarray, dict]:
+    """``binary_mask_decode_v1_atol_1e_6``: decoded (scaled) label values within ``atol`` of 0 or
+    1 are snapped to 0 / 1; any other value (0.6, 0.999, -1, NaN, Inf, ...) is refused. No
+    threshold such as > 0.5 is used. The input is never modified; returns (bool mask, record)."""
+    arr = np.asarray(values)
+    a = arr.astype(np.float64)  # always a new array
+    finite = np.isfinite(a)
+    near0 = finite & (np.abs(a) <= atol)
+    near1 = finite & (np.abs(a - 1.0) <= atol)
+    rejected = ~(near0 | near1)
+    uniq = np.unique(a[finite]) if finite.any() else np.array([])
+    snapped = (near0 & (a != 0.0)) | (near1 & (a != 1.0))
+    corr = np.where(near1, np.abs(a - 1.0), np.abs(a))[snapped]
+    record = {
+        "policy": BINARY_DECODE_POLICY,
+        "tolerance_abs": float(atol),
+        "raw_decoded_unique_values": [float(v) for v in uniq[:32]],
+        "raw_decoded_unique_count": int(uniq.size),
+        "non_finite_count": int((~finite).sum()),
+        "snapped_value_kinds": [float(v) for v in np.unique(a[snapped])[:32]],
+        "snapped_voxels": int(snapped.sum()),
+        "max_abs_correction": float(corr.max()) if corr.size else 0.0,
+        "rejected_value_count": int(rejected.sum()),
+    }
+    if rejected.any():
+        raise BinaryDecodeError(
+            f"{name}: {int(rejected.sum())} value(s) outside 0/1 +- {atol:g} "
+            f"({int((~finite).sum())} non-finite)",
+            record,
+        )
+    return near1.copy(), record
 
 
 def resample_mask(mask: np.ndarray, src: Grid, dst: Grid) -> np.ndarray:
