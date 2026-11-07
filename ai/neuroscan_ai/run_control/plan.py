@@ -53,6 +53,8 @@ class RunPlan:
     expected: dict[str, Any] = field(default_factory=dict)  # hashes / versions the gate must see
     excluded_aliases: tuple[str, ...] = ()  # e.g. permanently excluded cases
     validation_aliases: tuple[str, ...] = ()  # train stage only: cases from the val split
+    # alias -> role -> input file; only SHA-256 hashes keyed by case key reach the manifest
+    input_files: dict[str, dict[str, Path]] = field(default_factory=dict)
 
     @property
     def required_outputs(self) -> tuple[str, ...]:
@@ -115,6 +117,8 @@ def build_plan(**kw: Any) -> RunPlan:
         raise RunPlanError("a train run must declare validation cases from the val split")
     if len(set(plan.all_aliases)) != len(plan.all_aliases):
         raise RunPlanError("duplicate case aliases")
+    if set(plan.input_files) - set(plan.all_aliases):
+        raise RunPlanError("input files given for cases outside the plan")
     blocked = [a for a in plan.all_aliases if SOOP_PILOT.match(a) or a in plan.excluded_aliases]
     if blocked:
         raise RunPlanError(f"{len(blocked)} permanently excluded case(s) in the plan")

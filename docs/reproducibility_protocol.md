@@ -79,6 +79,23 @@ Git Commit, Checkpoint, Config, Split, 입력, PyTorch, CUDA, cuDNN, Driver, GPU
 `exact_match`일 때만 한다.
 CLI: `capture`(현재 상태 기록), `validate`(저장 Manifest와 현재 상태 비교), `compare`(두 Manifest 비교).
 
+### 단일 Manifest 비교와 Run Bundle 비교
+
+- `compare_manifests()`는 같은 종류의 Manifest 두 개의 구조 비교다. Post-run Manifest에는 Source Control·
+  Config가 없으므로 Post-run 단독 비교로는 실행 재현성을 주장하지 않는다.
+- 독립 실행 두 건의 **공식 재현성 판정은 Run Bundle 비교**(`run_control.bundle.compare_run_bundles`)를
+  쓴다. 각 Run을 Pre-run + Post-run 한 묶음으로 보고, 먼저 무결성(Schema, Pre/Post 연결, Seal, 기록된
+  모든 출력 Hash와 실제 파일)을 확인한 뒤 결과 정의 항목과 환경 항목을 비교한다.
+- **감사 필드와 재현성 필드는 분리한다.** run_id, 생성·시작·종료 시각, Pre-run Manifest Hash 자체,
+  Seal 값, 출력 폴더명은 독립 실행마다 달라야 정상이므로 재현성 판정에서 제외한다(Manifest에서는
+  삭제하지 않고 감사기록으로 보존). 따라서 run_id와 시간이 달라도 `exact_match`가 될 수 있다.
+- 필드 상태: `value`(값 있음), `unavailable`(필요하지만 수집되지 않음), `not_applicable`(그 단계에
+  적용되지 않음). Training Run의 입력 Checkpoint는 양쪽 모두 없으면 `not_applicable`로 일치 처리하고,
+  한쪽만 없으면 `mismatch`다. Validation·Inference·External validation의 입력 Checkpoint는 필수이며
+  없으면 `exact_match`가 될 수 없다.
+- 입력 파일 Hash(`inputs.file_sha256`)는 사례가 있는 실행에서 실제로 기록돼 있어야 한다. 비어 있으면
+  `unavailable`이다(비교할 근거가 없음).
+
 ## 6. 원본 ID와 경로 보호
 
 - 공개 Manifest에 허용: 토큰 경로(`<WORKDIR>`, `<CHECKPOINT>`, `<DATASET>` + 상대경로), Hash, 버전,

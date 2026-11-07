@@ -129,6 +129,7 @@ def pre_run_gate(
             checkpoint=plan.checkpoint,
             policies=dict(plan.policies),
             model={"architecture_id": plan.model_id},
+            input_files={a: dict(roles) for a, roles in plan.input_files.items()},
             access={
                 **{f"{s}_cases": n for s, n in plan.split_counts.items()},
                 "allowed_splits": sorted(plan.split_counts),

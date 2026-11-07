@@ -4,7 +4,10 @@
                       from the v1 split (read-only) and write the alias map and an alias-only smoke
                       split under the git-ignored results/v2_runs/_internal/
   run --run-id ID     one manifest-gated run (results/v2_runs/ID/), then verify_run
-  compare A B         compare two runs (manifests and output hashes)
+  compare A B         single-manifest comparison (pre vs pre, post vs post) and output hashes
+  bundle-compare A B --out-name NAME.json
+                      official run-bundle reproducibility verdict (read-only), written to the
+                      git-ignored results/v2_runs/NAME.json (never overwritten)
 
 The test split is never a candidate; SOOP cases are never read. ``run`` refuses before the gate when
 the working tree is not clean (the gate would reject it and the run ID would be used up).
@@ -36,7 +39,13 @@ from neuroscan_ai.reproducibility.environment import (  # noqa: E402
     capture_source_control,
 )
 from neuroscan_ai.reproducibility.hashing import alias_list_sha256, sha256_text_lf  # noqa: E402
-from neuroscan_ai.run_control import COMPLETED, build_plan, run_controlled, verify_run  # noqa: E402
+from neuroscan_ai.run_control import (  # noqa: E402
+    COMPLETED,
+    build_plan,
+    compare_run_bundles,
+    run_controlled,
+    verify_run,
+)
 from neuroscan_ai.v2 import MODEL_ID, V2TwoDRunner  # noqa: E402
 from neuroscan_ai.v2.dataset import isles_case_files  # noqa: E402
 from neuroscan_ai.v2.training import set_determinism  # noqa: E402
@@ -136,6 +145,7 @@ def run(run_id: str) -> int:
         aliases=split["train"],
         allowed_case_count=len(split["train"]),
         validation_aliases=split["val"],
+        input_files={a: {"dwi": f.dwi, "adc": f.adc, "gt": f.label} for a, f in case_files.items()},
         model_id=MODEL_ID,
         checkpoint=None,
         config=CONFIG,
@@ -204,6 +214,21 @@ def compare(a: str, b: str) -> int:
     )
 
 
+def bundle_compare(a: str, b: str, out_name: str) -> int:
+    if not re.match(r"^[a-z0-9][a-z0-9._-]{2,100}\.json$", out_name):
+        print("REFUSED: --out-name must be a lower-case .json file name", file=sys.stderr)
+        return 2
+    out = OUT_ROOT / out_name
+    if out.exists():
+        print("REFUSED: comparison file exists; not overwriting", file=sys.stderr)
+        return 2
+    res = compare_run_bundles(OUT_ROOT / a, OUT_ROOT / b)
+    res["runs"] = {"a": a, "b": b}
+    out.write_text(json.dumps(res, indent=2, sort_keys=True), encoding="utf-8")
+    print(json.dumps(res, indent=1))
+    return 0 if res["level"] == "exact_match" else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -213,11 +238,17 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("compare")
     c.add_argument("a")
     c.add_argument("b")
+    bc = sub.add_parser("bundle-compare")
+    bc.add_argument("a")
+    bc.add_argument("b")
+    bc.add_argument("--out-name", required=True)
     args = p.parse_args(argv)
     if args.cmd == "prepare":
         return prepare()
     if args.cmd == "run":
         return run(args.run_id)
+    if args.cmd == "bundle-compare":
+        return bundle_compare(args.a, args.b, args.out_name)
     return compare(args.a, args.b)
 
 

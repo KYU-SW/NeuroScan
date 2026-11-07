@@ -88,6 +88,23 @@ Train(아직 미구현): Checkpoint, 학습 History, Validation Metric, 선택 T
   Pre/Post의 identity·access·alias 목록 Hash 일치, 기록된 모든 출력 Hash와 디스크 파일. 실행 후
   Manifest나 필수 출력을 고치면 검증에 실패한다. 실패한 Run도 같은 방법으로 감사기록을 검증한다.
 
+### 독립 실행의 재현성 판정 (Run Bundle)
+
+두 실행의 공식 재현성 판정은 `compare_run_bundles(run_dir_a, run_dir_b)`로 한다(읽기 전용).
+
+1. 각 Run의 무결성: `verify_run`(Pre/Post 연결, Seal, 출력 Hash)과 Schema. 하나라도 실패하면 `mismatch`.
+2. Pre-run 비교: Schema·Stage·Dataset·Split·사례 수·Alias 목록·Case Key 정책·입력 파일 Hash·Config·Split·
+   Policy ID·Model ID·Access 계획(결과 정의), Git Commit·Purpose·Environment·Determinism(환경).
+3. Post-run 비교: 상태·종료 코드·성공/실패 사례 수·실제 접근 Split·Runner 종류·모든 출력 Hash
+   (Training이면 Checkpoint·History·Validation Metric·Threshold Record 포함, 결과 정의), Environment·
+   Determinism(환경).
+4. 판정: 결과 정의 차이 또는 미완료 Run → `mismatch`; 환경 차이 또는 Dirty Tree →
+   `compatible_but_not_exact`; 누락만 있음 → `unavailable`; 모두 일치 → `exact_match`.
+
+run_id·시각·Manifest Hash 자체·Seal 값·출력 폴더명은 감사 필드로 판정에서 제외한다. Training의 입력
+Checkpoint는 양쪽 모두 없으면 `not_applicable`로 일치 처리한다. RunPlan의 `input_files`로 받은 입력
+파일은 Case Key별 SHA-256만 Pre-run Manifest에 기록하며, 기록되지 않은 실행은 입력 일치를 주장할 수 없다.
+
 ## 9. 원본 ID와 경로 보호
 
 출력 파일과 Manifest는 alias가 아니라 위치 Case Key(`case_0001` 등)를 쓴다. Manifest에는 alias 평문,

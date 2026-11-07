@@ -65,6 +65,16 @@ RunPlan(train 4건 + validation 2건) → Pre-run Manifest → Gate 승인 → �
 Probability·Ungated·Brain Mask·Gated·History·Aggregate Hash를 비교한다. Checkpoint나 Probability가
 다르면 실패로 기록하고 원인을 조사하며, 결과를 맞추려고 재실행하거나 Seed를 바꾸지 않는다.
 
+공식 재현성 판정은 Run Bundle 비교(`bundle-compare`)로 한다. 단일 Manifest 비교(`compare`)는 Post-run에
+Source Control·Config가 없어 실행 재현성을 판정하지 못한다.
+
+첫 Smoke A·B(같은 Clean Commit)는 **재실행하지 않고** 기존 결과를 읽기 전용으로 다시 판정했다.
+Checkpoint·Training 기록·모든 Validation 출력·Aggregate Hash와 Pre-run 비교 대상 필드는 모두 같았다.
+다만 두 실행은 입력 파일 Hash 기록 기능 이전에 실행되어 `inputs.file_sha256`이 비어 있으므로
+Bundle 판정은 `unavailable`이다(입력 일치를 Manifest로 증명할 수 없음). 기존 단일 비교 결과
+(Pre-run `unavailable`, Post-run `compatible_but_not_exact`)도 그대로 보존한다. 이후 실행은 CLI가 각
+사례의 DWI·ADC·GT Hash를 Case Key별로 기록한다.
+
 ## 8. 실행 전제
 
 Gate는 Working Tree가 clean이어야 승인한다. 따라서 Smoke Test 실행 코드는 커밋된 상태여야 한다.

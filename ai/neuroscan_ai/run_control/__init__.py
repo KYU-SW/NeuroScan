@@ -6,6 +6,11 @@ approved, unchanged pre-run manifest) -> outputs (presence and relation checks) 
 runner is a separate step. Nothing here imports the v1 runners, PyTorch or MONAI.
 """
 
+from neuroscan_ai.run_control.bundle import (
+    NOT_APPLICABLE,
+    compare_bundle_contents,
+    compare_run_bundles,
+)
 from neuroscan_ai.run_control.gate import APPROVED, REJECTED, GateError, GateResult, pre_run_gate
 from neuroscan_ai.run_control.lifecycle import (
     COMPLETED,
@@ -31,9 +36,12 @@ __all__ = [
     "GateError",
     "GateResult",
     "MockRunner",
+    "NOT_APPLICABLE",
     "RunPlan",
     "RunPlanError",
     "build_plan",
+    "compare_bundle_contents",
+    "compare_run_bundles",
     "load_post_run",
     "pre_run_gate",
     "run_controlled",
