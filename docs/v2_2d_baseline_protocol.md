@@ -201,6 +201,8 @@ H·W를 8의 배수로 맞추기 위해 각 In-plane 축의 끝쪽을 0으로 �
     임상 Threshold가 아니다. 예: Z 4.8 mm는 ISLES thick 소그룹이지만 SOOP 5 mm 경고 대상은 아니다.
   - Ungated−Gated 차이
 - Ungated와 Gated 요약은 섞지 않는다. FP 기준값은 최적화하지 않는다.
+- 원본 GT가 빈 사례는 정상 음성 사례(`gt_case_status_v1`)다. 사례별 Dice·Lesion-wise Recall·Missed GT·
+  Small-lesion Recall은 `not_applicable`, FP 지표는 항상 계산한다(`docs/v2_2d_baseline_run_protocol.md`).
 
 ## 6. Checkpoint 선택 (val, Threshold 0.5, Ungated)
 

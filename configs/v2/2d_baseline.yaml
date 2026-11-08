@@ -141,6 +141,13 @@ training:                 # approved; checked against code by baseline_training.
   threshold: {value: 0.5, source: baseline_checkpoint_fixed_0_5, optimized: false}
   automatic_adjustment: forbidden   # no batch / lr / amp / tf32 / worker / threshold / loss changes, no OOM retry
 
+gt_case_status:           # checked against code by baseline_preprocess.validate_policy_config
+  policy_id: gt_case_status_v1
+  empty_original_gt_is_valid_negative: true
+  positive_gt_lost_after_preprocessing_is_blocked: true
+  negative_case_dice: not_applicable
+  negative_case_fp_metrics_required: true
+
 collapse_policy:          # checked against code by baseline_training.validate_hyperparameters
   stop_immediately:
     - non_finite_loss

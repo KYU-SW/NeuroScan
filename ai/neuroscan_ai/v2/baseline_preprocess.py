@@ -44,7 +44,11 @@ from neuroscan_ai.v2.geometry import (
     same_grid,
     validate_grid,
 )
-from neuroscan_ai.v2.safety_metrics import SLICE_SUBGROUP_POLICY, THICK_SUBGROUP_ABOVE_MM
+from neuroscan_ai.v2.safety_metrics import (
+    GT_CASE_STATUS,
+    SLICE_SUBGROUP_POLICY,
+    THICK_SUBGROUP_ABOVE_MM,
+)
 
 PREPROCESS_POLICY = "preprocess_v2_isles_1mm_inplane_v1"
 BRAIN_MASK_POLICY = "skull_stripped_background_isles_v2"
@@ -201,6 +205,10 @@ def policy_config_errors(cfg: dict) -> list[str]:
     expect("target_grid.integer_snap_rtol", tg.get("integer_snap_rtol"), TARGET_SIZE_SNAP_RTOL)
     expect("target_grid.integer_snap_atol", tg.get("integer_snap_atol"), TARGET_SIZE_SNAP_ATOL)
 
+    if cfg.get("gt_case_status") != GT_CASE_STATUS:
+        errs.append(
+            f"gt_case_status: config {cfg.get('gt_case_status')!r} != code {GT_CASE_STATUS!r}"
+        )
     isles = thick.get(_ISLES_SUBGROUP_KEY)
     others = {k: v for k, v in thick.items() if k != _ISLES_SUBGROUP_KEY}
     if not isinstance(isles, dict) or len(others) != 1:

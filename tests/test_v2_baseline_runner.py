@@ -48,7 +48,7 @@ from neuroscan_ai.v2.unet_2d import EXPECTED_PARAMETERS, build_model, count_para
 
 REPO = Path(__file__).resolve().parents[1]
 GIT = ["git", "-c", "user.name=synthetic", "-c", "user.email=synthetic@example.invalid"]
-TRAIN = ["syn-train-01", "syn-train-02"]
+TRAIN = ["syn-train-01", "syn-train-02", "syn-train-03"]  # 03: lesion-free (negative case)
 VAL = ["syn-val-01", "syn-val-02"]  # 01 lesion-positive, 02 lesion-free
 FORBIDDEN = ("sub-strokecase9999",)
 SHAPES = {
@@ -56,7 +56,9 @@ SHAPES = {
     "syn-train-02": (15, 14, 4),
     "syn-val-01": (16, 15, 4),
     "syn-val-02": (14, 16, 4),
+    "syn-train-03": (16, 14, 4),
 }
+NEGATIVE = ("syn-val-02", "syn-train-03")
 NEW_MODULES = ("baseline_dataset", "baseline_training", "baseline_inference", "baseline_runner")
 
 
@@ -67,7 +69,7 @@ def _write_case(folder: Path, alias: str, idx: int) -> CaseFiles:
     c = (np.array(shape) - 1) / 2
     brain = ((g[0] - c[0]) / (shape[0] * 0.4)) ** 2 + ((g[1] - c[1]) / (shape[1] * 0.4)) ** 2 <= 1
     lesion = np.zeros(shape, bool)
-    if alias != "syn-val-02":
+    if alias not in NEGATIVE:
         lesion = brain & (((g[0] - c[0] - 1) / 2.2) ** 2 + ((g[1] - c[1]) / 2.2) ** 2 <= 1)
         lesion[:, :, [0, 3]] = False  # slices 0 and 3: brain but no lesion (negatives)
     dwi = np.where(brain, 300 + rng.normal(0, 20, shape), 0).astype(np.float32)
@@ -499,7 +501,7 @@ def test_26_sampler_record(w):
 def test_27_preprocessing_record(w):
     p = _json(w, "preprocessing_record")
     assert p["preprocess_policy"] == "preprocess_v2_isles_1mm_inplane_v1"
-    assert len(p["train_cases"]) == 2 and len(p["validation_cases"]) == 2
+    assert len(p["train_cases"]) == 3 and len(p["validation_cases"]) == 2
     assert all("gt_decode" in c and "target_size" in c for c in p["train_cases"])
     assert p["inputs_modified"] is False
 
@@ -880,3 +882,164 @@ def test_a19_collapse_and_device_policy_config_code_doc():
     bad["collapse_policy"]["record_only"].append("all_one_validation_prediction")
     with pytest.raises(bt.ConfigValidationError):
         bt.validate_hyperparameters(bad)
+
+
+# ---------------------------------------------------------------- gt_case_status_v1
+from neuroscan_ai.v2.safety_metrics import (  # noqa: E402
+    GT_CASE_STATUS,
+    GT_LOST,
+    NEGATIVE_CASE,
+    POSITIVE_CASE,
+    case_metrics,
+    gt_case_status,
+    summarize,
+)
+
+
+def test_g01_02_03_empty_original_gt_is_negative_case_not_blocked(w):
+    assert gt_case_status(0, 0, 0) == NEGATIVE_CASE
+    assert gt_case_status(10, 40, 0) == POSITIVE_CASE
+    c = _cases(w, ["syn-train-03"])[0]  # loads without error (not blocked)
+    assert c.ground_truth_status == NEGATIVE_CASE and c.negative_only_case
+    assert c.record["gt_empty_expected"] is True and c.record["negative_only_case"] is True
+
+
+def test_g04_05_train_negative_case_in_dataset_all_slices_negative(w):
+    cases = _cases(w, TRAIN)
+    neg = [i for i, c in enumerate(cases) if c.negative_only_case]
+    assert len(cases) == 3 and len(neg) == 1
+    pos_pool, neg_pool = bd.slice_index(cases)
+    zs = cases[neg[0]].brain_slices
+    assert zs and cases[neg[0]].positive_slices == []
+    assert {(neg[0], z) for z in zs} <= set(neg_pool)
+    assert not any(ci == neg[0] for ci, _ in pos_pool)
+    _, rec = bd.epoch_sampling(cases, 42, 1)
+    assert rec["sampled_positive_ratio"] == 0.5  # 50 % kept over the whole train pool
+    p = _json(w, "preprocessing_record")
+    negs = [c for c in p["train_cases"] if c["negative_only_case"]]
+    assert len(negs) == 1 and negs[0]["ground_truth_status"] == NEGATIVE_CASE
+
+
+def test_g06_07_08_validation_negative_case_evaluated(w):
+    vm = _json(w, "validation_metrics")
+    neg = [c for c in vm["cases"] if c["ungated"]["ground_truth_status"] == NEGATIVE_CASE]
+    assert len(neg) == 1
+    u = neg[0]["ungated"]
+    for k in ("dice", "lesion_recall_exploratory", "missed_gt_count", "small_lesion_recall"):
+        assert u[k] == "not_applicable", k
+    for k in (
+        "false_positive_voxel_volume_ml",
+        "no_gt_overlap_component_volume_ml",
+        "no_gt_overlap_component_count",
+        "positive_voxel_ratio",
+        "pred_voxels",
+    ):
+        assert isinstance(u[k], (int, float)) and not isinstance(u[k], bool), k
+    assert isinstance(u["prediction_empty"], bool)
+    assert neg[0]["gated_comparison_only"]["dice"] == "not_applicable"
+    assert "pred_voxels" in neg[0]["gated_comparison_only"]
+    assert "outside_brain_mask_voxels" in neg[0]["output_record"]
+    assert vm["ungated"]["no_lesion_cases"] == 1
+
+
+def _tiny_lesion_case(folder: Path, name: str, extra_big: bool, pos):
+    shape = (40, 40, 4)
+    g = np.indices(shape).astype(float)
+    brain = ((g[0] - 19.5) / 15) ** 2 + ((g[1] - 19.5) / 15) ** 2 <= 1
+    gt = np.zeros(shape, np.uint8)
+    gt[pos[0], pos[1], 2] = 1
+    if extra_big:
+        gt[14:22, 14:22, 1:3] = 1
+    dwi = np.where(brain, 300.0, 0).astype(np.float32)
+    adc = np.where(brain, 800.0, 0).astype(np.float32)
+    aff = np.diag([0.5, 0.5, 4.0, 1.0])
+    files = CaseFiles(*(folder / f"{name}_{r}.nii.gz" for r in ("d", "a", "m")))
+    for f, a in zip((files.dwi, files.adc, files.label), (dwi, adc, gt), strict=True):
+        nib.save(nib.Nifti1Image(a, aff), str(f))
+    return files
+
+
+def test_g09_10_positive_gt_lost_during_preprocessing_blocked(tmp_path):
+    from neuroscan_ai.v2.baseline_preprocess import PreprocessError
+
+    assert gt_case_status(5, 0, 0) == GT_LOST and gt_case_status(50, 40, 1) == GT_LOST
+    # 0.5 mm -> 1 mm nearest skips every other source voxel: a 1-voxel GT there vanishes
+    outcomes = {}
+    for pos in ((25, 25), (26, 26)):
+        f = _tiny_lesion_case(tmp_path, f"single{pos[0]}", False, pos)
+        try:
+            bd.load_case("case_0001", f)
+            outcomes[pos] = "kept"
+        except PreprocessError as e:
+            assert "lost" in str(e)
+            outcomes[pos] = "blocked"
+    assert set(outcomes.values()) == {"kept", "blocked"}
+    lost_pos = next(k for k, v in outcomes.items() if v == "blocked")
+    f = _tiny_lesion_case(tmp_path, "twocomp", True, lost_pos)  # big component kept, tiny lost
+    with pytest.raises(PreprocessError):
+        bd.load_case("case_0002", f)
+
+
+@pytest.mark.parametrize("bad", [0.6, -1.0, float("nan"), float("inf")])
+def test_g11_invalid_gt_blocked(tmp_path, bad):
+    from neuroscan_ai.v2.baseline_preprocess import PreprocessError
+
+    f = _tiny_lesion_case(tmp_path, "bad", True, (20, 20))
+    img = nib.load(str(f.label))
+    arr = np.asanyarray(img.dataobj).astype(np.float32)
+    arr[3, 3, 0] = bad
+    nib.save(nib.Nifti1Image(arr, img.affine), str(f.label))
+    with pytest.raises(PreprocessError):
+        bd.load_case("case_0003", f)
+
+
+def test_g12_13_primary_dice_positive_only():
+    aff = np.eye(4)
+    gt = np.zeros((8, 8, 3), np.uint8)
+    gt[2:5, 2:5, 1] = 1
+    pred = gt.copy()
+    pred[2, 2, 1] = 0
+    pos = case_metrics(pred, gt, aff)
+    empty = np.zeros_like(gt)
+    fp = empty.copy()
+    fp[6, 6, 2] = 1
+    neg = case_metrics(fp, empty, aff)
+    s = summarize([pos, neg])
+    assert s["mean_dice_positive"] == round(pos["dice"], 6)  # negative case not averaged in
+    assert neg["dice"] == "not_applicable" and neg["false_positive_voxel_volume_ml"] > 0
+    assert s["false_positive_voxel_volume_ml"] == round(
+        pos["false_positive_voxel_volume_ml"] + neg["false_positive_voxel_volume_ml"], 6
+    )  # negative-case FP enters the checkpoint tie-break total
+    assert s["no_lesion_fp_volume_ml"] == neg["pred_volume_ml"]
+
+
+def test_g14_15_no_case_excluded_or_replaced(w):
+    p = _json(w, "preprocessing_record")
+    keys = case_keys(TRAIN + VAL)
+    assert sorted(c["case_key"] for c in p["train_cases"]) == sorted(keys[a] for a in TRAIN)
+    assert sorted(c["case_key"] for c in p["validation_cases"]) == sorted(keys[a] for a in VAL)
+    post = load_post_run(_rd(w))
+    assert post["run"]["cases_succeeded"] == len(VAL) and post["run"]["cases_failed"] == 0
+
+
+def test_gt_case_status_config_code_doc():
+    cfg = yaml.safe_load((REPO / "configs/v2/2d_baseline.yaml").read_text(encoding="utf-8"))
+    assert cfg["gt_case_status"] == GT_CASE_STATUS
+    bad = copy.deepcopy(cfg)
+    bad["gt_case_status"]["empty_original_gt_is_valid_negative"] = False
+    with pytest.raises(PolicyConfigError):
+        from neuroscan_ai.v2.baseline_preprocess import validate_policy_config
+
+        validate_policy_config(bad)
+    doc = (REPO / "docs/v2_2d_baseline_run_protocol.md").read_text(encoding="utf-8")
+    from neuroscan_ai.v2.safety_metrics import GT_CASE_STATES
+
+    assert GT_CASE_STATES == (
+        "positive_case",
+        "negative_case",
+        "gt_lost_during_preprocessing",
+        "invalid_gt",
+    )
+    assert all(f"`{state}`" in doc for state in GT_CASE_STATES)
+    for k, v in GT_CASE_STATUS.items():
+        assert k in doc and str(v).lower() in doc.lower(), k

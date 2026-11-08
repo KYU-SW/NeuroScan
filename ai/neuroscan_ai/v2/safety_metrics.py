@@ -15,6 +15,12 @@ Four separate false-positive-type measures (never interchangeable; none is a cli
 - ``oversegmentation_volume_ml``: voxels outside GT inside predicted components that DO overlap GT.
 The first equals the sum of the other two volumes. No FP threshold is optimised here.
 
+GT case status ``gt_case_status_v1``: an original GT with no voxel is a valid NEGATIVE case
+(kept, never excluded); a positive GT that becomes empty or loses a component in preprocessing is
+blocked. For negative cases Dice, lesion-wise recall, missed GT components and small-lesion recall
+are ``not_applicable`` (never set to 0 or 1); their FP measures are always computed and enter the
+safety report and the checkpoint FP tie-break. Primary Dice averages positive cases only.
+
 Slice-thickness subgroup (analysis only, ``isles_v1_qa_thick_subgroup_3mm``): thin = effective z
 spacing <= 3.0 mm, thick = > 3.0 mm. This is NOT the provisional component-safety (external
 dataset) thick-slice warning (effective z > 5.0 mm or slice thickness >= 5.0 mm,
@@ -36,6 +42,30 @@ from neuroscan_ai.component_analysis.warnings import (
 from neuroscan_ai.v2.geometry import as_binary_mask, decode_binary_mask, validate_grid
 
 MATCH_RULE = "overlap_ge_1_voxel_exploratory_not_clinical_tp"
+NOT_APPLICABLE = "not_applicable"
+POSITIVE_CASE, NEGATIVE_CASE = "positive_case", "negative_case"
+GT_LOST = "gt_lost_during_preprocessing"
+INVALID_GT = "invalid_gt"  # missing file, label outside tolerance, NaN / Inf, grid mismatch
+GT_CASE_STATES = (POSITIVE_CASE, NEGATIVE_CASE, GT_LOST, INVALID_GT)
+GT_CASE_STATUS = {
+    "policy_id": "gt_case_status_v1",
+    "empty_original_gt_is_valid_negative": True,
+    "positive_gt_lost_after_preprocessing_is_blocked": True,
+    "negative_case_dice": NOT_APPLICABLE,
+    "negative_case_fp_metrics_required": True,
+}
+
+
+def gt_case_status(original_voxels: int, model_grid_voxels: int, components_lost: int) -> str:
+    """positive_case / negative_case / gt_lost_during_preprocessing (invalid GT is refused
+    earlier by the decode policy and grid checks)."""
+    if original_voxels == 0:
+        return NEGATIVE_CASE
+    if model_grid_voxels == 0 or components_lost > 0:
+        return GT_LOST
+    return POSITIVE_CASE
+
+
 SMALL_LESION_BINS_ML = (0.1, 0.5, 1.0)  # recall of GT components with volume < bin
 SLICE_SUBGROUP_POLICY = "isles_v1_qa_thick_subgroup_3mm"
 THICK_SUBGROUP_ABOVE_MM = 3.0  # ISLES analysis subgroup (not a clinical threshold)
@@ -139,17 +169,35 @@ def case_metrics(
     overlapping = [c["pred_component"] for c in m["pred_components"] if c["overlaps_gt"]]
     overseg = int((np.isin(plab, overlapping) & ~g).sum()) if overlapping else 0
     z = grid.spacing[2]
+    negative = not g.any()
+    gts = m["gt_components"]
+    small = {
+        f"lt_{b}_ml": _ratio(
+            sum(c["detected_exploratory"] for c in gts if c["volume_ml"] < b),
+            sum(c["volume_ml"] < b for c in gts),
+        )
+        for b in SMALL_LESION_BINS_ML
+    }
     return {
         "output": output,
-        "gt_positive": bool(g.any()),
-        "dice": dice(p, g),
+        "gt_positive": not negative,
+        "ground_truth_status": NEGATIVE_CASE if negative else POSITIVE_CASE,
+        "gt_case_status_policy": GT_CASE_STATUS["policy_id"],
+        "dice": NOT_APPLICABLE if negative else dice(p, g),
+        "lesion_recall_exploratory": NOT_APPLICABLE
+        if negative
+        else _ratio(sum(c["detected_exploratory"] for c in gts), len(gts)),
+        "small_lesion_recall": NOT_APPLICABLE if negative else small,
+        "pred_voxels": int(p.sum()),
+        "prediction_empty": not p.any(),
+        "positive_voxel_ratio": round(int(p.sum()) / p.size, 8),
         "pred_volume_ml": round(int(p.sum()) * vml, 6),
         "gt_volume_ml": round(int(g.sum()) * vml, 6),
         "false_positive_voxel_volume_ml": round(int((p & ~g).sum()) * vml, 6),
         "no_gt_overlap_component_volume_ml": round(sum(c["voxels"] for c in fp_comp) * vml, 6),
         "no_gt_overlap_component_count": len(fp_comp),
         "oversegmentation_volume_ml": round(overseg * vml, 6),
-        "missed_gt_count": len(missed),
+        "missed_gt_count": NOT_APPLICABLE if negative else len(missed),
         "missed_gt_volumes_ml": [c["volume_ml"] for c in missed],
         "z_spacing_mm": round(float(z), 6),
         "slice_group": slice_subgroup(z)["slice_group"],

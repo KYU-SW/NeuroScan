@@ -8,6 +8,10 @@ Slices are zero-padded to multiples of 8 with ``valid_region_mask`` (``baseline_
 Items and batches carry the position-based ``case_key`` (``case_NNNN``) and the slice index only;
 aliases, subject IDs and file paths never enter a batch or an output.
 
+GT case status (``gt_case_status_v1``): an empty original GT is a valid negative case and is kept
+(all its brain slices are lesion-negative, ``negative_only_case``); a positive GT that becomes empty
+or loses a 26-connected component on the model grid is refused (``PreprocessError``).
+
 Sampling (per epoch, deterministic from the run seed and the epoch number): candidates are the
 slices whose model-grid brain mask is non-empty. The epoch length equals the number of candidate
 slices; round(0.5 x length) draws come from lesion-positive slices and the rest from
@@ -27,11 +31,13 @@ from typing import Any
 import nibabel as nib
 import numpy as np
 import torch
+from scipy import ndimage
 
-from neuroscan_ai.v2.baseline_preprocess import PreparedCase, load_and_prepare
+from neuroscan_ai.v2.baseline_preprocess import PreparedCase, PreprocessError, load_and_prepare
 from neuroscan_ai.v2.baseline_slices import pad_training_slice
 from neuroscan_ai.v2.dataset import CaseFiles
-from neuroscan_ai.v2.geometry import decode_binary_mask
+from neuroscan_ai.v2.geometry import decode_binary_mask, resample_mask
+from neuroscan_ai.v2.safety_metrics import GT_CASE_STATUS, GT_LOST, NEGATIVE_CASE, gt_case_status
 from neuroscan_ai.v2.unet_2d import INPUT_MULTIPLE
 
 SAMPLING_POLICY = "brain_slices_positive_fraction_0_5_seed_epoch_v1"
@@ -48,6 +54,12 @@ class BaselineCase:
     original_gt: np.ndarray  # bool, original grid, decoded with binary_mask_decode_v1_atol_1e_6
     brain_slices: list[int] = field(default_factory=list)
     positive_slices: list[int] = field(default_factory=list)
+    ground_truth_status: str = ""
+    gt_components_lost: int = 0
+
+    @property
+    def negative_only_case(self) -> bool:
+        return self.ground_truth_status == NEGATIVE_CASE
 
     @property
     def record(self) -> dict[str, Any]:
@@ -71,7 +83,24 @@ class BaselineCase:
             "normalisation",
             "adc_values_converted",
         )
-        return {"case_key": self.case_key, **{k: r[k] for k in keys}}
+        return {
+            "case_key": self.case_key,
+            **{k: r[k] for k in keys},
+            "ground_truth_status": self.ground_truth_status,
+            "gt_case_status_policy": GT_CASE_STATUS["policy_id"],
+            "gt_empty_expected": self.negative_only_case,
+            "negative_only_case": self.negative_only_case,
+            "gt_components_lost": self.gt_components_lost,
+        }
+
+
+def components_lost(original_gt: np.ndarray, prepared: PreparedCase) -> int:
+    """Original 26-connected GT components with no voxel left after the nearest round trip."""
+    if not original_gt.any():
+        return 0
+    back = resample_mask(prepared.label, prepared.model_grid, prepared.original_grid)
+    lab, n = ndimage.label(original_gt, np.ones((3, 3, 3), bool))
+    return sum(not back[lab == i].any() for i in range(1, n + 1))
 
 
 def load_case(case_key: str, files: CaseFiles) -> BaselineCase:
@@ -80,7 +109,11 @@ def load_case(case_key: str, files: CaseFiles) -> BaselineCase:
     brain = prepared.brain
     zs = [z for z in range(brain.shape[2]) if brain[:, :, z].any()]
     pos = [z for z in zs if prepared.label[:, :, z].any()]
-    return BaselineCase(case_key, prepared, gt, zs, pos)
+    lost = components_lost(gt, prepared)
+    status = gt_case_status(int(gt.sum()), int(prepared.label.sum()), lost)
+    if status == GT_LOST:
+        raise PreprocessError(f"{case_key}: positive GT lost during preprocessing (blocked)")
+    return BaselineCase(case_key, prepared, gt, zs, pos, status, lost)
 
 
 def load_cases(files: Mapping[str, CaseFiles], keys: Mapping[str, str]) -> list[BaselineCase]:

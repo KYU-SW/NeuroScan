@@ -80,6 +80,35 @@ Batch 최대 크기까지 0으로 더 채우고 그 영역도 `valid_region_mask
 `case_key`(`case_NNNN`), `slice_index`, Geometry(모델 격자 Shape·간격, Padding 전후 크기).
 Alias·원본 ID·파일 경로는 Batch와 출력에 들어가지 않는다.
 
+### GT 사례 상태 `gt_case_status_v1`
+
+Config `gt_case_status`와 코드 `safety_metrics.GT_CASE_STATUS`가 같아야 한다(다르면 Gate 전 거부):
+
+```yaml
+gt_case_status:
+  policy_id: gt_case_status_v1
+  empty_original_gt_is_valid_negative: true
+  positive_gt_lost_after_preprocessing_is_blocked: true
+  negative_case_dice: not_applicable
+  negative_case_fp_metrics_required: true
+```
+
+| 상태 | 조건 | 처리 |
+|---|---|---|
+| `positive_case` | 원본 GT Voxel > 0, Component > 0, 전처리 후 보존 | 정상 |
+| `negative_case` | 원본 GT Voxel 0, decode·파일·Shape·Affine 정상 | 정상 음성 사례(ready). 제외·대체 금지 |
+| `gt_lost_during_preprocessing` | 원본 양성인데 모델 격자 GT가 비거나 원본 Component가 Nearest 왕복 후 소실 | blocked(`PreprocessError`) |
+| `invalid_gt` | 파일 누락, 허용오차 밖 Label, NaN·Inf, decode 실패, Shape·Affine 불일치 | blocked |
+
+빈 GT라는 이유만으로 실패시키지 않는다. Train 음성 사례는 Dataset에 그대로 들어가며 모든 Brain
+Slice가 Lesion-negative Pool에 등록된다(`negative_only_case: true`). Positive 50% Sampling은 전체 Train
+Pool 기준이다. Validation 음성 사례는 항상 평가한다: Ungated·Gated Prediction Voxel 수, FP 지표 3종
+(`false_positive_voxel_volume_ml`, `no_gt_overlap_component_volume_ml`, `no_gt_overlap_component_count`),
+Positive Voxel 비율, Brain Mask 밖 Voxel 수, `prediction_empty`. Dice·Lesion-wise Recall·Missed GT
+Component·Small-lesion Recall은 `not_applicable`이며 0이나 1로 바꾸지 않는다. Checkpoint 1차 Dice는
+양성 사례만 평균하고, 음성 사례의 FP는 Safety Report와 FP Tie-break 합계에 들어간다. 현재 Validation
+음성 사례는 1건뿐이므로 그 결과를 일반적인 특이도나 임상 성능으로 표현하지 않는다.
+
 ## 5. Sampling
 
 후보는 모델 격자 Brain Mask가 있는 Slice다. Epoch 길이는 후보 Slice 수와 같고, round(0.5 × 길이)는
