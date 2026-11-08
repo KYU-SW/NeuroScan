@@ -30,6 +30,7 @@ from neuroscan_ai.run_control.outputs import (
     AGGREGATE_LABEL,
     IMAGE_KINDS,
     METRIC_KIND,
+    OPTIONAL_RUN_FILES,
     aggregate_path,
     case_path,
     check_case,
@@ -146,6 +147,10 @@ def run_controlled(
                 outputs.setdefault(AGGREGATE_KIND, {})[label] = p
             else:
                 missing.append(f"run:{label}")
+    for label in OPTIONAL_RUN_FILES:  # e.g. a failing runner's failure record
+        p = run_output_path(gate.run_dir, label)
+        if p.is_file():
+            outputs.setdefault(AGGREGATE_KIND, {})[label] = p
 
     if failed_stage:
         status = FAILED_RUNNER

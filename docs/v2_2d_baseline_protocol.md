@@ -1,8 +1,8 @@
 # v2 2D Baseline 프로토콜
 
-> 상태: **설계 고정·코드·합성 테스트만 구현.** 실제 MRI 전처리, 정식 학습, 추론, Threshold 탐색은
-> 아직 실행하지 않았고 각각 별도 승인 대상이다. 학습 Hyperparameter(Epoch·Optimizer·Learning Rate·
-> Batch·Loss·Augmentation·Sampler·Seed)는 승인 전이며 Config에 `null`로 둔다.
+> 상태: **설계·학습 Hyperparameter 확정, Training Runner는 합성 검증 단계.** 실제 학습, 추론,
+> Threshold 탐색은 아직 실행하지 않았고 각각 별도 승인 대상이다. Hyperparameter·Runner·산출물·실패
+> 기록은 `docs/v2_2d_baseline_run_protocol.md`에 있다.
 
 - 코드: `ai/neuroscan_ai/v2/` — `unet_2d`(모델), `geometry`(1 mm 격자·역변환),
   `baseline_preprocess`(전처리), `baseline_outputs`(원본 격자 출력), `safety_metrics`(평가·안전 지표),
@@ -67,7 +67,7 @@ Slice 입력은 끝쪽 0 Padding으로 8의 배수를 맞추고, 출력은 원�
 5. **정규화**: 대상 격자 Brain Mask 안 통계로 DWI·ADC를 사례별 z-score한다. 입력 정규화일 뿐이며
    저장된 ADC 값은 변환하지 않는다.
 6. 원본 배열·파일은 수정하지 않는다. 원본·대상 격자의 Shape·Affine·간격·축 방향과 보간 방식을
-   전처리 기록에 남긴다(Run 산출물 `training/preprocessing_audit.json`).
+   전처리 기록에 남긴다(Run 산출물 `training/preprocessing_record.json`).
 
 ### Config·코드 정합 검사
 
@@ -211,7 +211,7 @@ H·W를 8의 배수로 맞추기 위해 각 In-plane 축의 끝쪽을 0으로 �
 4. 마지막으로 더 이른 Epoch를 고른다.
 
 Threshold가 0.5가 아니거나 Gated 기준인 기록은 거부한다. 선택 결과는
-`training/selection_record.json`에 기록한다.
+`training/training_history.json`의 `selection`과 Checkpoint의 `best_metric`에 기록한다.
 
 ## 7. Threshold 탐색 (Checkpoint 고정 후 1회)
 
@@ -223,22 +223,24 @@ Threshold가 0.5가 아니거나 Gated 기준인 기록은 거부한다. 선택 
   최적화하지 않는다.
 - 같은 Validation 사례로 고르고 보고하므로 낙관적 편향이 있다. 이 사실을 기록에 명시한다.
 - Test·Final Test는 쓰지 않는다. val 외 Split을 요청하면 거부한다.
-- 기록 `training/threshold_search.json`은 한 번만 쓰고, 다시 쓰려 하면 거부한다.
+- 기록 `training/threshold_search.json`은 한 번만 쓰고, 다시 쓰려 하면 거부한다. 이 탐색은 학습 Run에
+  포함되지 않으며(`baseline_v1` 필수 산출물 아님), 별도 승인 후 고정 Checkpoint로 실행한다.
 
 ## 8. 실행 통제 연결
 
 Training Run은 Runner의 `training_outputs = "baseline_v1"` Profile로 다음 산출물을 필수로 요구한다.
 
-- Smoke 4종: `checkpoint`·`training_history`·`validation_metrics`·`threshold_record`
-- 추가 4종: `last_checkpoint`·`selection_record`·`threshold_search`·`preprocessing_audit`
+- `best_checkpoint`·`last_checkpoint`·`training_history`·`validation_metrics`·`threshold_record`·
+  `sampler_record`·`preprocessing_record`(모두 `training/` 아래)와 실행 단위 Aggregate
+  (`aggregate_results/aggregate.json`) 및 Validation 사례별 출력
+- 실패 Run은 `training/failure_record.json`을 남기며, 있으면 Post-run Manifest에 Hash가 기록된다.
 
 하나라도 없으면 `failed_incomplete_outputs`이다. 알 수 없는 Profile은 Gate 전에 거부한다.
 Smoke Runner의 기본 Profile `smoke_v1`과 기존 Smoke 결과는 바뀌지 않는다.
 
 ## 9. 아직 하지 않은 것 (별도 승인 필요)
 
-- 학습 Hyperparameter 확정(Loss 결합 비율·Dice Smooth 포함)과 Baseline Runner(학습 Loop·
-  Augmentation·Sampler) 구현
-- 실제 ISLES 사례 전처리 QA
-- 정식 학습, Validation 추론, Threshold 탐색 실행
+- 실제 ISLES Train·Val 데이터 준비(Alias 대응표·Split)와 정식 학습 실행
+- 연속 붕괴(예: 여러 Epoch 연속 빈 Prediction) 중단 정책
+- Validation Threshold 탐색 실행
 - Test·Final Test·SOOP 평가

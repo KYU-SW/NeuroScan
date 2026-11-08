@@ -110,15 +110,36 @@ safety_metrics:
       slice_thickness_mm_gte: 5.0
       provisional: true
 
-training:                 # pending approval
-  epochs: null
-  optimizer: null
-  learning_rate: null
-  batch_size: null
-  loss: null
-  augmentation: null
-  sampler: null
-  seed: null
+training:                 # approved; checked against code by baseline_training.validate_hyperparameters
+  max_epochs: 100
+  early_stopping_patience: 20
+  batch_size: 32
+  num_workers: 0
+  seed: 42
+  precision: fp32
+  amp: false
+  tf32_matmul: false
+  tf32_convolution: false
+  deterministic_algorithms: true
+  cudnn_benchmark: false
+  device: cuda_if_available       # execution device only; not a tuned hyperparameter
+  augmentation: none              # no augmentation approved
+  optimizer: {name: adamw, learning_rate: 1.0e-3, weight_decay: 1.0e-4}
+  scheduler: {name: cosine_annealing, minimum_learning_rate: 1.0e-6, step: epoch, t_max_epochs: 100}
+  loss:
+    dice_weight: 1.0
+    bce_weight: 1.0
+    dice_smooth: 1.0
+    region: valid_region_mask
+    reduction: per_sample_mean_then_batch_mean
+  gradient_clipping: {norm_type: 2, max_norm: 1.0}
+  sampling:
+    candidates: brain_mask_slices
+    positive_fraction: 0.5
+    order: deterministic_run_seed_and_epoch
+    keep_negative_slices: true
+  threshold: {value: 0.5, source: baseline_checkpoint_fixed_0_5, optimized: false}
+  automatic_adjustment: forbidden   # no batch / lr / amp / tf32 / worker / threshold / loss changes, no OOM retry
 
 determinism:
   precision: fp32

@@ -61,8 +61,10 @@ JSON, 실행 단위 Aggregate JSON, Post-run Manifest. **Probability·Ungated·G
 실행에서 함께 저장한다.** 하나라도 없으면 `failed_incomplete_outputs`.
 
 Train: Checkpoint, 학습 History, Validation Metric, 선택 Threshold 기록, Post-run Manifest. 필수 학습
-산출물은 Runner의 `training_outputs` Profile로 정한다. `smoke_v1`(기본)은 위 4종이고, `baseline_v1`은
-여기에 `last_checkpoint`·`selection_record`·`threshold_search`·`preprocessing_audit`를 더한다.
+산출물은 Runner의 `training_outputs` Profile로 정한다. `smoke_v1`(기본)은 위 4종이다. `baseline_v1`은
+`best_checkpoint`·`last_checkpoint`·`training_history`·`validation_metrics`·`threshold_record`·
+`sampler_record`·`preprocessing_record`다(Smoke의 `checkpoint` 대신 best/last 두 Checkpoint). 실패한
+Runner가 남긴 `training/failure_record.json`은 선택 산출물로, 있으면 Post-run Manifest에 Hash가 기록된다.
 Profile은 Gate 전에 확인하며(알 수 없으면 거부), Post-run 기록의 `required_outputs`에 반영된다.
 
 ## 6. 출력 관계 검사

@@ -362,20 +362,25 @@ def test_committed_baseline_config_matches_code():
     assert (tc["start"], tc["stop"], tc["step"]) == (0.10, 0.90, 0.05)
     assert cfg["outputs"]["official_output"] == "ungated"
     assert cfg["selection"]["dice_tie_tolerance"] == 1e-4
-    assert all(v is None for v in cfg["training"].values())  # pending approval
+    from neuroscan_ai.v2.baseline_training import validate_hyperparameters
+
+    assert validate_hyperparameters(cfg)["batch_size"] == 32  # approved, locked hyperparameters
     assert set(cfg["data"]["forbidden_splits"]) == {"test", "final_test"}
 
 
 def test_training_output_profiles():
     assert training_output_labels("smoke_v1") == tuple(TRAINING_FILES)
     base = training_output_labels("baseline_v1")
-    assert set(TRAINING_FILES) < set(base)
-    assert {
+    assert base == (
+        "best_checkpoint",
         "last_checkpoint",
-        "selection_record",
-        "threshold_search",
-        "preprocessing_audit",
-    } <= set(base)
+        "training_history",
+        "validation_metrics",
+        "threshold_record",
+        "sampler_record",
+        "preprocessing_record",
+    )
+    assert "threshold_search" not in base  # no threshold search in the training run
     for label in BASELINE_TRAINING_FILES:
         assert run_output_path(Path("r"), label).parts[1] == "training"
     with pytest.raises(ValueError):
@@ -425,12 +430,12 @@ def test_baseline_profile_requires_extra_training_outputs(w):  # noqa: F811
     assert post["run"]["status"] == "failed_incomplete_outputs"
     rec = post["reproducibility"]
     assert "run:last_checkpoint" in rec["missing_outputs"]
-    assert "threshold_search" in rec["required_outputs"]
+    assert "sampler_record" in rec["required_outputs"]
     p2 = _train_plan(w, "baseline-profile-complete")
     _go(w, p2, _baseline_runner(w, write_extra=True))
     post2 = json.loads((p2.run_dir / "post_run_manifest.json").read_text(encoding="utf-8"))
     assert post2["run"]["status"] == "completed"
-    assert "threshold_search" in post2["outputs"]["aggregate_results"]
+    assert "sampler_record" in post2["outputs"]["aggregate_results"]
 
 
 def test_unknown_profile_refused_before_gate(w):  # noqa: F811

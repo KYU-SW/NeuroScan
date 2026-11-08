@@ -24,14 +24,20 @@ TRAINING_FILES = {
     "threshold_record": "training/threshold_record.json",
 }
 
-# v2 baseline training adds these labels (smoke runs keep TRAINING_FILES only)
+# v2 baseline training (profile baseline_v1); the run-level aggregate (aggregate_results/
+# aggregate.json) is required for every run in addition. Smoke runs keep TRAINING_FILES only.
 BASELINE_TRAINING_FILES = {
-    **TRAINING_FILES,
+    "best_checkpoint": "training/best_checkpoint.pt",
     "last_checkpoint": "training/last_checkpoint.pt",
-    "selection_record": "training/selection_record.json",
-    "threshold_search": "training/threshold_search.json",
-    "preprocessing_audit": "training/preprocessing_audit.json",
+    "training_history": "training/training_history.json",
+    "validation_metrics": "training/validation_metrics.json",
+    "threshold_record": "training/threshold_record.json",
+    "sampler_record": "training/sampler_record.json",
+    "preprocessing_record": "training/preprocessing_record.json",
 }
+# written only by a failing run; hashed into the post-run manifest when present
+OPTIONAL_RUN_FILES = {"failure_record": "training/failure_record.json"}
+RUN_LEVEL_FILES = {**TRAINING_FILES, **BASELINE_TRAINING_FILES, **OPTIONAL_RUN_FILES}
 TRAINING_OUTPUT_PROFILES = {
     "smoke_v1": tuple(TRAINING_FILES),
     "baseline_v1": tuple(BASELINE_TRAINING_FILES),
@@ -58,9 +64,9 @@ def run_output_path(run_dir: Path, label: str) -> Path:
     """Path of a run-level output label (``aggregate`` or a training output)."""
     if label == AGGREGATE_LABEL:
         return aggregate_path(run_dir)
-    if label not in BASELINE_TRAINING_FILES:
+    if label not in RUN_LEVEL_FILES:
         raise ValueError(f"unknown run-level output '{label}'")
-    return Path(run_dir) / BASELINE_TRAINING_FILES[label]
+    return Path(run_dir) / RUN_LEVEL_FILES[label]
 
 
 def save_image(path: Path, data: np.ndarray, affine: np.ndarray) -> None:
