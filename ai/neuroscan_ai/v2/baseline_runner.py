@@ -15,6 +15,11 @@ A failure (any exception, incl. CUDA OOM or a deterministic-algorithm error) wri
 ``training/failure_record.json`` (stage, error type, redacted message, output hashes so far) and
 re-raises; the lifecycle then writes the failed post-run manifest. Nothing is retried or adjusted.
 
+Device policy ``device_policy_v2_baseline_cuda_required_v1``: the dataset profile is derived from
+the plan's inputs (``dataset_profile``), not declared by the caller. A formal ISLES profile needs
+device ``cuda`` (no cpu / cuda_if_available override, no CPU fallback); a refused device stops
+before the gate (no run folder, run ID unused). Synthetic profiles may use any allowed device.
+
 ``epoch_limit`` exists for SYNTHETIC tests only: it is refused unless the plan's dataset is
 ``synthetic`` and it is recorded in the training history.
 """
@@ -55,7 +60,7 @@ from neuroscan_ai.v2.unet_2d import CHANNELS, MODEL_ID, build_model, describe
 
 RUNNER_KIND = "v2_2d_baseline_runner"
 CHECKPOINT_SCHEMA = "neuroscan-v2-baseline-checkpoint-v1"
-SYNTHETIC_DATASET = "synthetic"
+SYNTHETIC_DATASET = bt.PROFILE_SYNTHETIC
 TIMING_NAME = "training/timing_record.json"  # wall-clock audit; not a hashed output
 _ABS_PATH = re.compile(r"([A-Za-z]:[\\/])|(^|[\s'\"(])/[^\s]")
 
@@ -67,6 +72,30 @@ def prepare_config(config_path: Path) -> dict[str, Any]:
     bt.validate_architecture(cfg)
     bt.validate_hyperparameters(cfg)
     return cfg
+
+
+def dataset_profile(plan: RunPlan, cfg: Mapping[str, Any], repo_root: Path) -> str:
+    """``formal_isles`` when any formal marker is present (formal dataset id, an input file under
+    the repository's raw-data folder, the formal split file or the internal run-split folder);
+    ``synthetic`` only for dataset id ``synthetic`` with declared inputs and no formal marker."""
+    root = Path(repo_root).resolve()
+    raw = root / "data" / "raw"
+    split = Path(plan.split_file).resolve()
+    formal = (
+        plan.dataset_id == cfg.get("dataset_id")
+        or split == (root / cfg["data"]["split_source"]).resolve()
+        or split.is_relative_to(root / "results" / "v2_runs" / "_internal")
+        or any(
+            Path(p).resolve().is_relative_to(raw)
+            for roles in plan.input_files.values()
+            for p in roles.values()
+        )
+    )
+    if formal:
+        return bt.PROFILE_FORMAL
+    if plan.dataset_id == SYNTHETIC_DATASET and plan.input_files:
+        return bt.PROFILE_SYNTHETIC
+    raise bt.ConfigValidationError("dataset profile cannot be established; refused")
 
 
 def redact(msg: str, aliases: Iterable[str] = (), forbidden_ids: Iterable[str] = ()) -> str:
@@ -90,6 +119,7 @@ class BaselineRunner:
     case_files: Mapping[str, CaseFiles]  # alias -> files (never written to any output)
     device: str | None = None  # execution device override (default: config)
     epoch_limit: int | None = None  # synthetic tests only
+    dataset_profile: str = bt.PROFILE_FORMAL  # set by run_baseline; formal unless proven synthetic
     forbidden_ids: tuple[str, ...] = ()
     kind: str = RUNNER_KIND
     training_outputs: str = "baseline_v1"
@@ -148,11 +178,14 @@ class BaselineRunner:
     def _run(self, gate: GateResult, plan: RunPlan) -> None:
         cfg = self.config
         tr = cfg["training"]
-        if self.epoch_limit is not None and plan.dataset_id != SYNTHETIC_DATASET:
-            raise bt.ConfigValidationError("epoch_limit is allowed for synthetic runs only")
+        if plan.dataset_id != SYNTHETIC_DATASET:  # defence in depth (run_baseline checks first)
+            self.dataset_profile = bt.PROFILE_FORMAL
+        effective = bt.check_device_policy(
+            self.dataset_profile, tr["device"], self.device, self.epoch_limit
+        )
         run_dir = gate.run_dir
         pre = gate.pre_run or {}
-        device = bt.resolve_device(self.device or tr["device"])
+        device = bt.resolve_device(effective)
         bt.apply_determinism(self.seed)
 
         self._stage = "data_loading"
@@ -230,7 +263,7 @@ class BaselineRunner:
                 }
             )
             timing.append({"epoch": epoch, "duration_seconds": time.perf_counter() - t0})
-            if epoch - sel["selected_epoch"] >= patience:
+            if bt.early_stop(epoch, sel["selected_epoch"], patience):
                 stopped_early = True
                 break
         last_epoch = history[-1]["epoch"]
@@ -251,6 +284,9 @@ class BaselineRunner:
                 "max_epochs": max_epochs,
                 "epochs_run": last_epoch,
                 "synthetic_epoch_limit": self.epoch_limit,
+                "dataset_profile": self.dataset_profile,
+                "device_policy": bt.DEVICE_POLICY,
+                "collapse_policy": bt.FIXED_COLLAPSE_POLICY,
                 "early_stopping_patience": patience,
                 "stopped_early": stopped_early,
                 "selection": best_sel,
@@ -396,7 +432,6 @@ def run_baseline(
 ) -> dict[str, Any]:
     """Config checks (1-4) -> RunPlan (5) -> gate + manifests (6-7) -> runner (8)."""
     cfg = prepare_config(config_path)
-    bt.validate_device(device or cfg["training"]["device"])  # unknown device: refused before gate
     plan = build_plan(
         **{
             **plan_kwargs,
@@ -405,8 +440,16 @@ def run_baseline(
             "policies": dict(cfg["policies"]),
         }
     )
+    profile = dataset_profile(plan, cfg, repo_root)
+    # refused device / override / epoch_limit: before the gate (no folder, run ID unused)
+    bt.check_device_policy(profile, cfg["training"]["device"], device, epoch_limit)
     runner = BaselineRunner(
-        cfg, case_files, device=device, epoch_limit=epoch_limit, forbidden_ids=tuple(forbidden_ids)
+        cfg,
+        case_files,
+        device=device,
+        epoch_limit=epoch_limit,
+        forbidden_ids=tuple(forbidden_ids),
+        dataset_profile=profile,
     )
     return run_controlled(
         plan,

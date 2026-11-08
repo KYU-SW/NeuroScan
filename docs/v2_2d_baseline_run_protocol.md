@@ -33,13 +33,21 @@ Dice+BCE 1:1, Clipping 1.0)으로 정했으며 실제 데이터로 조정하지 
 실행 장치(`device`)만 Hyperparameter가 아니며 `cpu`·`cuda`·`cuda_if_available` 중 하나여야 한다
 (그 밖의 값은 Gate 전에 거부).
 
-### Device 정책
+### Device 정책 `device_policy_v2_baseline_cuda_required_v1`
 
-- `cuda_if_available`은 개발·합성 실행 편의용이다(GPU가 없으면 CPU).
-- 정식 재현성 학습 RunPlan에서는 실행 장치를 `cuda` 또는 `cpu`로 명시해 고정한다.
-- `cuda`를 요청했는데 GPU를 쓸 수 없으면 CPU로 자동 전환하지 않고 실행이 실패한다
-  (`DeviceUnavailableError`, 실패 기록·실패 Post-run Manifest). Dataset을 열기 전에 확인한다.
-- 합성 테스트의 CPU 실행은 허용한다.
+- Baseline Config의 `training.device`는 `cuda`다(다른 값이면 Config 검증에서 거부).
+- Dataset Profile은 호출자가 선언하지 않고 RunPlan 입력으로 정한다(`baseline_runner.dataset_profile`).
+  정식 Dataset ID, 저장소 원본 데이터 폴더 아래 입력, 정식 Split 파일, 내부 Run Split 폴더 중 하나라도
+  있으면 `formal_isles`다. Dataset ID `synthetic`이고 입력이 선언됐으며 정식 표지가 없을 때만
+  `synthetic`이다. 그 밖은 거부한다.
+- `formal_isles`: 장치는 `cuda`만 허용한다. `cpu`·`cuda_if_available` Override와 `epoch_limit`은
+  Gate 전에 거부된다(Dataset·Model 생성 0건, Run 폴더 없음, Run ID 미사용). CLI `--device`도 같다.
+- `synthetic`: `cpu`·`cuda`·`cuda_if_available` 모두 허용한다(`cuda_if_available`은 개발·합성 편의용).
+- `cuda`를 요청했는데 GPU를 쓸 수 없으면 CPU로 자동 전환하지 않고 실패한다(`DeviceUnavailableError`,
+  실패 기록·실패 Post-run Manifest, Dataset을 열기 전). 다른 GPU를 자동 선택하지 않는다.
+- Package Lock: CLI `run`은 승인된 `requirements-lock.txt` 정규화(LF) SHA-256 전체값을
+  `--package-lock-sha256`로 받아 데이터 접근 전에 비교한다. 파일이 없거나 값이 다르면 거부한다.
+  Config에는 복사하지 않으며 Pre-run Manifest가 기록하고 Gate가 다시 검증한다.
 
 ## 2. 자동 조절 금지
 
@@ -101,10 +109,17 @@ Epoch마다 기록: `train_loss_total`·`_dice`·`_bce`, `validation_loss_total`
 
 ## 8. 붕괴·중단
 
+Config `collapse_policy`와 코드 `baseline_training.FIXED_COLLAPSE_POLICY`가 같아야 한다(다르면 거부).
+
+| 구분 | 코드 |
+|---|---|
+| 즉시 중단 | `non_finite_loss`, `non_finite_parameter`, `non_finite_gradient`, `probability_out_of_range`, `all_one_validation_prediction`, `missing_required_validation_output`, `cuda_oom`, `deterministic_algorithm_error` |
+| 기록만 | `empty_validation_prediction`, `all_validation_cases_empty_in_single_epoch`, `low_validation_dice` |
+| 연속 빈 Epoch | `rely_on_early_stopping`(patience 20), 별도 연속 빈 Epoch 기준 없음(`separate_empty_epoch_limit: null`) |
+
 Epoch마다 기록: 모든 Validation Prediction이 빈 경우, 전체 1인 사례 수, 무병변 FP Volume, 전체 Positive
-Voxel 비율. 자동 중단: NaN·Inf Loss, Gradient 비유한 값, Optimizer step 뒤 Parameter 비유한 값, 전체 1
-Prediction, Probability 비유한·[0, 1] 밖, 필수 Validation 결과 누락. 빈 Prediction은 기록만 하며 한
-Epoch로 중단하지 않는다. 연속 붕괴 정책은 정식 학습 전 별도 승인 대상이다.
+Voxel 비율. 빈 Prediction은 단일 Epoch에서 전체 Validation이 비어도 즉시 중단하지 않으며, 선택 Epoch가
+20 Epoch 동안 바뀌지 않으면 Early stopping으로 끝난다. 전체 1 Prediction은 즉시 중단한다.
 
 ## 9. 안전지표와 Ungated·Gated
 

@@ -2,12 +2,17 @@
 
   validate            steps 1-4 only: load configs/v2/2d_baseline.yaml, policy / architecture /
                       hyperparameter checks. Opens no data and builds no model.
-  run --run-id ID --alias-map PATH --split PATH
+  run --run-id ID --alias-map PATH --split PATH --package-lock-sha256 HEX [--device cuda]
                       one manifest-gated training run (results/v2_runs/ID/), then verify_run.
                       The alias map (alias -> case id) and the alias-only split must already exist
                       under the git-ignored results/v2_runs/_internal/; preparing them for the real
                       ISLES train / val data is a separate, approved step (not part of this CLI).
 
+Formal ISLES runs require device ``cuda`` (device_policy_v2_baseline_cuda_required_v1): an override
+other than ``cuda`` (``cpu``, ``cuda_if_available``) is refused before any data access, no run
+folder is created and the run ID stays unused. ``--package-lock-sha256`` must be the full approved
+canonical-LF SHA-256 of requirements-lock.txt; a missing lock file or another hash is refused before
+any data access (the gate checks it again against the pre-run manifest).
 ``run`` refuses before the gate when the working tree is not clean (the gate would reject it and
 the run ID would be used up). Test, Final Test and SOOP cases are refused by the RunPlan.
 Exit codes: 0 ok, 1 run failed, 2 refused.
@@ -37,6 +42,12 @@ from neuroscan_ai.reproducibility.environment import (  # noqa: E402
 from neuroscan_ai.reproducibility.hashing import alias_list_sha256, sha256_text_lf  # noqa: E402
 from neuroscan_ai.run_control import COMPLETED, verify_run  # noqa: E402
 from neuroscan_ai.v2.baseline_runner import prepare_config, run_baseline  # noqa: E402
+from neuroscan_ai.v2.baseline_training import (  # noqa: E402
+    DEVICES,
+    PROFILE_FORMAL,
+    ConfigValidationError,
+    check_device_policy,
+)
 from neuroscan_ai.v2.dataset import isles_case_files  # noqa: E402
 
 CONFIG = REPO_ROOT / "configs" / "v2" / "2d_baseline.yaml"
@@ -51,8 +62,19 @@ def validate() -> int:
     return 0
 
 
-def run(run_id: str, alias_map: Path, split: Path) -> int:
+def run(
+    run_id: str, alias_map: Path, split: Path, lock_sha256: str, device: str | None = None
+) -> int:
     cfg = prepare_config(CONFIG)  # refused here (before any plan / gate) on a config mismatch
+    try:
+        check_device_policy(PROFILE_FORMAL, cfg["training"]["device"], device, None)
+    except ConfigValidationError as e:
+        print(f"REFUSED: {e}", file=sys.stderr)
+        return 2
+    lock = REPO_ROOT / "requirements-lock.txt"
+    if len(lock_sha256) != 64 or not lock.is_file() or sha256_text_lf(lock) != lock_sha256.lower():
+        print("REFUSED: package lock missing or not the approved full SHA-256", file=sys.stderr)
+        return 2
     for p in (alias_map, split):
         if not p.resolve().is_relative_to(INTERNAL.resolve()) or not p.is_file():
             print("REFUSED: alias map and split must exist under results/v2_runs/_internal/")
@@ -106,6 +128,7 @@ def run(run_id: str, alias_map: Path, split: Path) -> int:
         environment=env,
         determinism=det,
         forbidden_ids=tuple(amap.values()),
+        device=device,
     )
     if res.get("pre_run_status") != "approved":
         print(json.dumps(res))
@@ -123,10 +146,12 @@ def main() -> int:
     r.add_argument("--run-id", required=True)
     r.add_argument("--alias-map", required=True, type=Path)
     r.add_argument("--split", required=True, type=Path)
+    r.add_argument("--package-lock-sha256", required=True)
+    r.add_argument("--device", choices=DEVICES, default=None)
     a = ap.parse_args()
     if a.cmd == "validate":
         return validate()
-    return run(a.run_id, a.alias_map, a.split)
+    return run(a.run_id, a.alias_map, a.split, a.package_lock_sha256, a.device)
 
 
 if __name__ == "__main__":

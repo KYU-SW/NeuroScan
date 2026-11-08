@@ -62,6 +62,31 @@ FIXED_TRAINING: dict[str, Any] = {
     "automatic_adjustment": "forbidden",
 }
 DEVICES = ("cpu", "cuda", "cuda_if_available")  # execution device; not a tuned hyperparameter
+DEVICE_POLICY = "device_policy_v2_baseline_cuda_required_v1"
+FORMAL_DEVICE = "cuda"  # formal ISLES runs: config device and any override must be cuda
+PROFILE_FORMAL, PROFILE_SYNTHETIC = "formal_isles", "synthetic"
+FIXED_COLLAPSE_POLICY: dict[str, Any] = {
+    "stop_immediately": [
+        "non_finite_loss",
+        "non_finite_parameter",
+        "non_finite_gradient",
+        "probability_out_of_range",
+        "all_one_validation_prediction",
+        "missing_required_validation_output",
+        "cuda_oom",
+        "deterministic_algorithm_error",
+    ],
+    "record_only": [
+        "empty_validation_prediction",
+        "all_validation_cases_empty_in_single_epoch",
+        "low_validation_dice",
+    ],
+    "consecutive_empty_policy": {
+        "action": "rely_on_early_stopping",
+        "early_stopping_patience": 20,
+        "separate_empty_epoch_limit": None,
+    },
+}
 FIXED_DETERMINISM = {
     "precision": "fp32",
     "automatic_mixed_precision": False,
@@ -156,8 +181,9 @@ def validate_hyperparameters(cfg: Mapping[str, Any]) -> dict[str, Any]:
     device = tr.pop("device", None)
     errs: list[str] = []
     _diff("training", tr, FIXED_TRAINING, errs)
-    if device not in DEVICES:
-        errs.append("training.device")
+    if device != FORMAL_DEVICE:  # the baseline config is the formal-run config
+        errs.append(f"training.device (must be {FORMAL_DEVICE}: {DEVICE_POLICY})")
+    _diff("collapse_policy", cfg.get("collapse_policy"), FIXED_COLLAPSE_POLICY, errs)
     _diff("determinism", dict(cfg.get("determinism") or {}), FIXED_DETERMINISM, errs)
     if (cfg.get("run_control") or {}).get("training_output_profile") != "baseline_v1":
         errs.append("run_control.training_output_profile")
@@ -181,6 +207,31 @@ def apply_determinism(seed: int) -> None:
 def validate_device(name: str | None) -> None:
     if name not in DEVICES:
         raise ConfigValidationError(f"unknown device '{name}' (allowed: {', '.join(DEVICES)})")
+
+
+def check_device_policy(
+    profile: str, config_device: str, override: str | None, epoch_limit: int | None
+) -> str:
+    """Effective device for a dataset profile (before the gate; nothing is opened or created).
+
+    Formal ISLES runs: device must be ``cuda`` (override None or ``cuda``), no ``epoch_limit``.
+    Synthetic runs: ``cpu`` / ``cuda`` / ``cuda_if_available`` allowed."""
+    effective = override or config_device
+    validate_device(effective)
+    if profile == PROFILE_FORMAL:
+        if effective != FORMAL_DEVICE or override not in (None, FORMAL_DEVICE):
+            raise ConfigValidationError(f"formal runs require device cuda ({DEVICE_POLICY})")
+        if epoch_limit is not None:
+            raise ConfigValidationError("epoch_limit is allowed for synthetic runs only")
+    elif profile != PROFILE_SYNTHETIC:
+        raise ConfigValidationError(f"unknown dataset profile '{profile}'")
+    return effective
+
+
+def early_stop(epoch: int, selected_epoch: int, patience: int) -> bool:
+    """Stop when the selected epoch has not changed for ``patience`` epochs. Empty validation
+    predictions are only recorded; this is the only rule that ends a run on them."""
+    return epoch - selected_epoch >= patience
 
 
 def resolve_device(name: str) -> torch.device:

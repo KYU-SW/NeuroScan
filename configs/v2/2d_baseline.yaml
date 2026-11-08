@@ -122,7 +122,7 @@ training:                 # approved; checked against code by baseline_training.
   tf32_convolution: false
   deterministic_algorithms: true
   cudnn_benchmark: false
-  device: cuda_if_available       # execution device only; not a tuned hyperparameter
+  device: cuda                    # device_policy_v2_baseline_cuda_required_v1 (formal ISLES runs)
   augmentation: none              # no augmentation approved
   optimizer: {name: adamw, learning_rate: 1.0e-3, weight_decay: 1.0e-4}
   scheduler: {name: cosine_annealing, minimum_learning_rate: 1.0e-6, step: epoch, t_max_epochs: 100}
@@ -140,6 +140,25 @@ training:                 # approved; checked against code by baseline_training.
     keep_negative_slices: true
   threshold: {value: 0.5, source: baseline_checkpoint_fixed_0_5, optimized: false}
   automatic_adjustment: forbidden   # no batch / lr / amp / tf32 / worker / threshold / loss changes, no OOM retry
+
+collapse_policy:          # checked against code by baseline_training.validate_hyperparameters
+  stop_immediately:
+    - non_finite_loss
+    - non_finite_parameter
+    - non_finite_gradient
+    - probability_out_of_range
+    - all_one_validation_prediction
+    - missing_required_validation_output
+    - cuda_oom
+    - deterministic_algorithm_error
+  record_only:
+    - empty_validation_prediction
+    - all_validation_cases_empty_in_single_epoch
+    - low_validation_dice
+  consecutive_empty_policy:
+    action: rely_on_early_stopping
+    early_stopping_patience: 20
+    separate_empty_epoch_limit: null
 
 determinism:
   precision: fp32

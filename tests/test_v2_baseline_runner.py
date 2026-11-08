@@ -773,3 +773,110 @@ def test_different_seed_changes_outputs(w):
     assert any(not torch.equal(a[k], b[k]) for k in a)
     cases = _cases(w, TRAIN)
     assert bd.epoch_sampling(cases, 42, 1)[0] != bd.epoch_sampling(cases, 43, 1)[0]
+
+
+# ---------------------------------------------------------------- formal device policy (A-2..A-4)
+def test_a01_config_default_device_is_cuda():
+    cfg = yaml.safe_load((REPO / "configs/v2/2d_baseline.yaml").read_text(encoding="utf-8"))
+    assert cfg["training"]["device"] == "cuda"
+    cfg["training"]["device"] = "cuda_if_available"
+    with pytest.raises(bt.ConfigValidationError):
+        bt.validate_hyperparameters(cfg)
+
+
+@pytest.mark.parametrize(
+    "profile,override,ok",
+    [
+        ("formal_isles", None, True),  # A2: real dataset + cuda
+        ("formal_isles", "cuda", True),
+        ("formal_isles", "cpu", False),  # A3
+        ("formal_isles", "cuda_if_available", False),  # A4
+        ("synthetic", "cpu", True),  # A5
+        ("synthetic", "cuda_if_available", True),  # A6
+        ("synthetic", "cuda", True),
+        ("declared_by_caller", "cpu", False),
+    ],
+)
+def test_a02_06_device_policy_matrix(profile, override, ok):
+    if ok:
+        assert bt.check_device_policy(profile, "cuda", override, None) == (override or "cuda")
+    else:
+        with pytest.raises(bt.ConfigValidationError):
+            bt.check_device_policy(profile, "cuda", override, None)
+
+
+def test_a03_04_09_12_formal_override_refused_before_gate(w, monkeypatch):
+    calls = []
+    monkeypatch.setattr(bd, "load_cases", lambda *a, **k: calls.append("dataset"))
+    monkeypatch.setattr(br, "build_model", lambda *a, **k: calls.append("model"))
+    for dev in ("cpu", "cuda_if_available"):
+        with pytest.raises(bt.ConfigValidationError):
+            _run(w, "syn-formal-refused", dataset_id="isles2022", device=dev, epoch_limit=None)
+    with pytest.raises(bt.ConfigValidationError):  # epoch_limit is synthetic-only
+        _run(w, "syn-formal-refused", dataset_id="isles2022", device="cuda", epoch_limit=1)
+    assert calls == [] and not _rd(w, "syn-formal-refused").exists()
+    monkeypatch.undo()
+    # the refused run ID was not consumed: a valid run can still use it
+    assert _run(w, "syn-formal-refused")["status"] == COMPLETED
+
+
+def test_profile_cannot_be_declared_synthetic(w, monkeypatch):
+    raw = w.data / "raw"
+    raw.mkdir(exist_ok=True)
+    files = {}
+    for a, f in w.files.items():
+        files[a] = CaseFiles(*(Path(shutil.copy(p, raw / p.name)) for p in (f.dwi, f.adc, f.label)))
+    inputs = {a: {"dwi": f.dwi, "adc": f.adc, "gt": f.label} for a, f in files.items()}
+    with pytest.raises(bt.ConfigValidationError):  # dataset id says synthetic, inputs are raw data
+        _run(w, "syn-declared-synthetic", input_files=inputs)
+    with pytest.raises(bt.ConfigValidationError):  # unknown dataset id: no profile
+        _run(w, "syn-unknown-profile", dataset_id="other-dataset")
+    assert not _rd(w, "syn-declared-synthetic").exists()
+    assert not _rd(w, "syn-unknown-profile").exists()
+
+
+def test_a13_14_empty_predictions_are_recorded_not_stopped(w, monkeypatch):
+    monkeypatch.setattr(
+        bi, "predict_model_grid", lambda m, c, d, b: np.zeros(c.prepared.model_grid.shape)
+    )
+    res = _run(w, "syn-empty-epochs", epoch_limit=3)
+    assert res["status"] == COMPLETED
+    hist = _json(w, "training_history", "syn-empty-epochs")
+    assert hist["epochs_run"] == 3 and hist["stopped_early"] is False
+    assert all(e["collapse"]["all_predictions_empty"] for e in hist["epochs"])
+    assert all(e["validation_mean_positive_case_dice"] == 0.0 for e in hist["epochs"])
+
+
+def test_a15_early_stopping_patience_20(w):
+    assert not bt.early_stop(20, 1, 20) and bt.early_stop(21, 1, 20)
+    hist = _json(w, "training_history")
+    assert hist["early_stopping_patience"] == 20
+    cp = hist["collapse_policy"]["consecutive_empty_policy"]
+    assert cp == {
+        "action": "rely_on_early_stopping",
+        "early_stopping_patience": 20,
+        "separate_empty_epoch_limit": None,
+    }
+    assert hist["dataset_profile"] == "synthetic"
+    assert hist["device_policy"] == "device_policy_v2_baseline_cuda_required_v1"
+
+
+def test_a19_collapse_and_device_policy_config_code_doc():
+    cfg = yaml.safe_load((REPO / "configs/v2/2d_baseline.yaml").read_text(encoding="utf-8"))
+    assert cfg["collapse_policy"] == bt.FIXED_COLLAPSE_POLICY
+    assert (
+        cfg["collapse_policy"]["consecutive_empty_policy"]["early_stopping_patience"]
+        == (cfg["training"]["early_stopping_patience"])
+    )
+    doc = (REPO / "docs/v2_2d_baseline_run_protocol.md").read_text(encoding="utf-8")
+    for code in (
+        *bt.FIXED_COLLAPSE_POLICY["stop_immediately"],
+        *bt.FIXED_COLLAPSE_POLICY["record_only"],
+        "rely_on_early_stopping",
+        bt.DEVICE_POLICY,
+    ):
+        assert code in doc, code
+    bad = copy.deepcopy(cfg)
+    bad["collapse_policy"]["record_only"].append("all_one_validation_prediction")
+    with pytest.raises(bt.ConfigValidationError):
+        bt.validate_hyperparameters(bad)
