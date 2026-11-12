@@ -62,6 +62,19 @@ class BaselineCase:
         return self.ground_truth_status == NEGATIVE_CASE
 
     @property
+    def model_grid_shape(self) -> tuple[int, int, int]:
+        return self.prepared.model_grid.shape
+
+    @property
+    def model_grid_spacing(self) -> tuple[float, float, float]:
+        return self.prepared.model_grid.spacing
+
+    def slice_arrays(self, z: int):
+        """Unpadded slice ``z``: image (2, H, W), label, brain mask, valid region (H, W)."""
+        p = self.prepared
+        return p.image[:, :, :, z], p.label[:, :, z], p.brain[:, :, z], None
+
+    @property
     def record(self) -> dict[str, Any]:
         """Preprocessing audit (no paths, no IDs)."""
         r = self.prepared.record
@@ -122,8 +135,11 @@ def load_cases(files: Mapping[str, CaseFiles], keys: Mapping[str, str]) -> list[
 
 
 def slice_item(case: BaselineCase, z: int) -> dict[str, Any]:
-    p = case.prepared
-    padded = pad_training_slice(p.image[:, :, :, z], p.label[:, :, z], p.brain[:, :, z])
+    """One padded slice; ``case`` is a ``BaselineCase`` or a disk-backed
+    ``baseline_cache.CachedCase`` (only slice ``z`` is read from its memory-mapped arrays)."""
+    image, label, brain, valid = case.slice_arrays(z)
+    padded = pad_training_slice(image, label, brain, valid=valid)
+    shape, spacing = case.model_grid_shape, case.model_grid_spacing
     return {
         "image": padded["image"],  # (2, H, W) float32
         "target": padded["label"][None].astype(np.float32),  # (1, H, W)
@@ -132,8 +148,8 @@ def slice_item(case: BaselineCase, z: int) -> dict[str, Any]:
         "case_key": case.case_key,
         "slice_index": int(z),
         "geometry": {
-            "model_grid_shape": list(p.model_grid.shape),
-            "model_grid_spacing_mm": [round(s, 8) for s in p.model_grid.spacing],
+            "model_grid_shape": list(shape),
+            "model_grid_spacing_mm": [round(s, 8) for s in spacing],
             "unpadded_hw": list(padded["size"]),
             "padded_hw": list(padded["image"].shape[1:]),
         },

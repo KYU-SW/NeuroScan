@@ -37,11 +37,13 @@ from neuroscan_ai.run_control import (
     verify_run,
 )
 from neuroscan_ai.run_control.outputs import case_path, run_output_path, training_output_labels
+from neuroscan_ai.v2 import baseline_cache as bc
 from neuroscan_ai.v2 import baseline_dataset as bd
 from neuroscan_ai.v2 import baseline_inference as bi
 from neuroscan_ai.v2 import baseline_runner as br
 from neuroscan_ai.v2 import baseline_training as bt
 from neuroscan_ai.v2.baseline_preprocess import PolicyConfigError
+from neuroscan_ai.v2.baseline_preprocess import validate_policy_config as _validate_policy_config
 from neuroscan_ai.v2.baseline_selection import select_checkpoint
 from neuroscan_ai.v2.dataset import CaseFiles
 from neuroscan_ai.v2.unet_2d import EXPECTED_PARAMETERS, build_model, count_parameters
@@ -59,7 +61,16 @@ SHAPES = {
     "syn-train-03": (16, 14, 4),
 }
 NEGATIVE = ("syn-val-02", "syn-train-03")
-NEW_MODULES = ("baseline_dataset", "baseline_training", "baseline_inference", "baseline_runner")
+NEW_MODULES = (
+    "baseline_dataset",
+    "baseline_training",
+    "baseline_inference",
+    "baseline_runner",
+    "baseline_cache",
+    "baseline_progress",
+    "baseline_resume",
+    "resource_monitor",
+)
 
 
 def _write_case(folder: Path, alias: str, idx: int) -> CaseFiles:
@@ -113,6 +124,7 @@ def w(tmp_path_factory):
         repo=repo, data=data, files=files, cfg=repo / "configs/v2/2d_baseline.yaml"
     )
     ns.roots = PathRoots(repo, repo / "models", data)
+    ns.caches = {}
     ns.main = _run(ns, "syn-baseline-a")
     return ns
 
@@ -146,14 +158,42 @@ def _plan_kwargs(w, run_id, **kw):
     return args
 
 
-def _run(w, run_id, cfg=None, epoch_limit=2, sc=None, device="cpu", **kw):
+def _cache(w, cfg_path, train, val):
+    """Synthetic disk cache for (config, train, val); built once (results/v2_cache/ of the
+    throwaway repo). An invalid config gets no cache (the run is refused before data)."""
+    key = (str(cfg_path), tuple(train), tuple(val))
+    if key not in w.caches:
+        cfg = yaml.safe_load(Path(cfg_path).read_text(encoding="utf-8"))
+        try:  # same checks as br.prepare_config, without the spies some tests install
+            _validate_policy_config(cfg)
+            bt.validate_architecture(cfg)
+            bt.validate_hyperparameters(cfg)
+            br.validate_operational_config(cfg)
+        except Exception:  # noqa: BLE001 - refused config: the runner never reaches the cache
+            return w.repo / "results/v2_cache/not-built"
+        out = w.repo / "results/v2_cache" / f"syn_{len(w.caches):02d}"
+        bc.build_cache(
+            out,
+            config=cfg,
+            split_file=w.data / "split.json",
+            files={"train": {a: w.files[a] for a in train}, "val": {a: w.files[a] for a in val}},
+            git_commit=capture_source_control(w.repo)["git_commit"],
+            package_lock_sha256_lf=_env(w)["package_lock_sha256_lf"],
+            forbidden_ids=FORBIDDEN,
+        )
+        w.caches[key] = out
+    return w.caches[key]
+
+
+def _run(w, run_id, cfg=None, epoch_limit=2, sc=None, device="cpu", memory_probe=None, **kw):
     det = capture_determinism(
         torch, seed=None, precision="fp32", amp=False, workers=0, batch_size=32
     )
+    plan_kw = _plan_kwargs(w, run_id, **kw)
     return br.run_baseline(
         cfg or w.cfg,
-        _plan_kwargs(w, run_id, **kw),
-        w.files,
+        plan_kw,
+        _cache(w, cfg or w.cfg, plan_kw["aliases"], plan_kw["validation_aliases"]),
         repo_root=w.repo,
         roots=w.roots,
         source_control=sc or capture_source_control(w.repo),
@@ -162,6 +202,7 @@ def _run(w, run_id, cfg=None, epoch_limit=2, sc=None, device="cpu", **kw):
         forbidden_ids=FORBIDDEN,
         device=device,
         epoch_limit=epoch_limit,
+        memory_probe=memory_probe,
     )
 
 
@@ -191,6 +232,7 @@ def test_01_config_validated_before_dataset(w, monkeypatch):
     calls = []
     monkeypatch.setattr(br, "validate_policy_config", lambda c: calls.append("policy"))
     monkeypatch.setattr(bd, "load_cases", lambda *a, **k: calls.append("dataset"))
+    monkeypatch.setattr(bc, "verify_cache", lambda *a, **k: calls.append("dataset"))
     bad = _bad_cfg(w, "bad_batch", lambda c: c["training"].update(batch_size=16))
     with pytest.raises(bt.ConfigValidationError):
         _run(w, "syn-refused-config", cfg=bad)
@@ -205,10 +247,13 @@ def test_01_config_validated_before_dataset(w, monkeypatch):
 def test_02_03_no_dataset_or_model_before_gate_approval(w, monkeypatch):
     calls = []
     monkeypatch.setattr(bd, "load_cases", lambda *a, **k: calls.append("dataset"))
+    monkeypatch.setattr(bc, "verify_cache", lambda *a, **k: calls.append("dataset"))
     monkeypatch.setattr(br, "build_model", lambda *a, **k: calls.append("model"))
     dirty = {**capture_source_control(w.repo), "working_tree_clean": False}
-    res = _run(w, "syn-rejected-gate", sc=dirty)
-    assert res["pre_run_status"] == "rejected" and calls == []
+    # a dirty tree is refused before the gate (cache commit binding): nothing is created
+    with pytest.raises(bc.CacheCommitError, match="working_tree_not_clean"):
+        _run(w, "syn-rejected-gate", sc=dirty)
+    assert calls == [] and not _rd(w, "syn-rejected-gate").exists()
 
 
 def test_04_parameter_count_fixed():
@@ -650,7 +695,7 @@ def test_lesion_free_validation_refused(w):
 
 def test_epoch_limit_refused_for_real_dataset(w):
     runner = br.BaselineRunner(
-        yaml.safe_load(w.cfg.read_text(encoding="utf-8")), w.files, epoch_limit=1
+        yaml.safe_load(w.cfg.read_text(encoding="utf-8")), w.repo / "no-cache", epoch_limit=1
     )
     plan = SimpleNamespace(dataset_id="isles2022")
     with pytest.raises(bt.ConfigValidationError):
@@ -810,6 +855,7 @@ def test_a02_06_device_policy_matrix(profile, override, ok):
 def test_a03_04_09_12_formal_override_refused_before_gate(w, monkeypatch):
     calls = []
     monkeypatch.setattr(bd, "load_cases", lambda *a, **k: calls.append("dataset"))
+    monkeypatch.setattr(bc, "verify_cache", lambda *a, **k: calls.append("dataset"))
     monkeypatch.setattr(br, "build_model", lambda *a, **k: calls.append("model"))
     for dev in ("cpu", "cuda_if_available"):
         with pytest.raises(bt.ConfigValidationError):

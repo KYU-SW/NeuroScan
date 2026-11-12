@@ -75,27 +75,37 @@ def validation_loss(
 
 
 def evaluate(
-    model: torch.nn.Module, cases: list[BaselineCase], device: torch.device, batch_size: int
+    model: torch.nn.Module,
+    cases: list[BaselineCase],
+    device: torch.device,
+    batch_size: int,
+    keep_outputs: bool = True,
 ) -> dict[str, Any]:
     """Validation at threshold 0.5 on the original grid. Returns metrics, collapse record and the
-    per-case original-grid outputs (kept in memory; written only for the final model)."""
+    per-case original-grid outputs. Per-epoch validation passes ``keep_outputs=False`` (only
+    counts are kept, one case's arrays in RAM at a time); the final validation of the selected
+    model keeps them for writing."""
     if not any(c.original_gt.any() for c in cases):
         raise MissingValidationResultError("all validation cases are lesion-free; refused")
     model.eval()
     outputs: dict[str, OriginalGridOutputs] = {}
     ung_m, gat_m = [], []
+    total_vox = pos_vox = all_one = 0
     for c in cases:
         res = build_outputs(predict_model_grid(model, c, device, batch_size), c.prepared, THRESHOLD)
-        outputs[c.case_key] = res
+        if keep_outputs:
+            outputs[c.case_key] = res
         aff = res.grid.affine
         ung_m.append(case_metrics(res.ungated, c.original_gt, aff, output="ungated"))
         gat_m.append(case_metrics(res.gated, c.original_gt, aff, output="gated"))
+        total_vox += int(res.ungated.size)
+        pos_vox += int(res.ungated.sum())
+        all_one += int(bool(res.ungated.all()))
+        del res
     ung, gat = summarize(ung_m), summarize(gat_m)
-    total_vox = sum(int(o.ungated.size) for o in outputs.values())
-    pos_vox = sum(int(o.ungated.sum()) for o in outputs.values())
     collapse = {
         "all_predictions_empty": pos_vox == 0,
-        "cases_predicted_all_one": sum(bool(o.ungated.all()) for o in outputs.values()),
+        "cases_predicted_all_one": all_one,
         "no_lesion_fp_volume_ml": ung["no_lesion_fp_volume_ml"],
         "positive_voxel_ratio": round(pos_vox / total_vox, 8) if total_vox else None,
     }

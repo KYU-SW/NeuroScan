@@ -81,6 +81,20 @@ Profile은 Gate 전에 확인하며(알 수 없으면 거부), Post-run 기록�
 - 같은 run_id의 출력이 있으면 거부한다. 재실행은 새 run_id로 한다. 실패한 Run 폴더를 지우고 같은
   ID를 다시 쓰지 않으며, Manifest·Output Hash를 수정하지 않는다. 실패한 Run도 보존한다.
 
+### 중단과 Resume (지원하는 Runner만, 예: v2 2D Baseline)
+
+- Runner가 안전 지점에서 `RunInterrupted`(상태 `interrupted` 또는 `interrupted_resource_guard`)를 던지면
+  Lifecycle은 Runner가 정한 `segments/segment_NN/`에 Segment Post-run Manifest와 Seal을 쓴다(종료 코드 3).
+  Run의 `post_run_manifest.json`은 쓰지 않으므로 Run은 끝나지 않은 상태다. `verify_run(run_dir,
+  segment="segment_NN")`로 Segment를 검증한다.
+- `resume_controlled`는 명시적으로 호출될 때만 같은 run_id로 이어 간다. 조건: Pre-run Manifest 존재,
+  Run 미종료(`post_run_manifest.json` 없음 — 완료·실패 Run은 Resume 불가), Git Commit·clean Tree·Config·
+  Split·Alias 목록·모든 입력 파일 Hash·Package lock·환경 전체·결정론 설정이 Pre-run Manifest와 같음, 그리고
+  Runner의 `resume_preflight` 통과. 하나라도 다르면 `ResumeRefusedError`이며 아무것도 쓰지 않는다. 끝나면
+  일반 Post-run Manifest와 Seal을 쓴다(`reproducibility.resumed`, `interrupted_segments` 기록).
+- Progress·Resume Checkpoint·Interruption Record·Timing은 운영 기록이며 Post-run Output Hash에 넣지 않는다.
+  따라서 중단 후 Resume한 Run과 연속 Run을 `compare_run_bundles`로 비교할 수 있다.
+
 ## 8. 결정론과 사후 검증
 
 - Runner가 실제로 쓰는 Seed를 Pre-run·Post-run Manifest의 `determinism.seed`에 기록한다. 호출자가

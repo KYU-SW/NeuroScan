@@ -185,3 +185,33 @@ policies:
   threshold: fixed_0.5_selection_then_single_val_search
   brain_mask: skull_stripped_background_isles_v2
   combination: single_model_2d
+
+# ---- long-run operation (no effect on results; checked against code by
+# ---- baseline_runner.validate_operational_config; never tuned or changed automatically)
+cache:                    # baseline_cache: results/v2_cache/<version>/, built by scripts/prepare_v2_2d_cache.py
+  policy_id: disk_backed_preprocessed_cache_v1
+  mmap_mode: r
+  max_active_cases: 2
+  overwrite: false
+
+progress:                 # training/progress.json (operational; not in any output hash)
+  atomic_write: true
+  update_frequency: epoch
+  excluded_from_reproducibility_hash: true
+
+resume:                   # training/resume_checkpoint.pt; resume only on explicit request
+  enabled: true
+  update_frequency: epoch
+  automatic_resume: false
+  exact_environment_required: true
+
+resource_monitor:
+  record_process_rss: true
+  record_system_available_memory: true
+  record_cuda_memory: true
+
+host_memory_guard:        # host operating-safety limit, NOT a model / performance threshold
+  policy_id: host_memory_guard_v1
+  check_frequency: epoch
+  minimum_available_gib: 4.0       # current operating candidate; changed only by separate approval after r2
+  automatic_resume: false

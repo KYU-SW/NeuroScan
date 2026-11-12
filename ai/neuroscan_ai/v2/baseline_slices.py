@@ -32,14 +32,24 @@ DICE_SMOOTH = 1.0  # provisional (part of the pending loss hyperparameters)
 
 
 def pad_training_slice(
-    image: np.ndarray, label: np.ndarray, brain: np.ndarray, multiple: int = INPUT_MULTIPLE
+    image: np.ndarray,
+    label: np.ndarray,
+    brain: np.ndarray,
+    multiple: int = INPUT_MULTIPLE,
+    valid: np.ndarray | None = None,
 ) -> dict:
     """Pad one slice: image (C, H, W), label / brain (H, W). Returns padded copies plus
-    ``valid_region_mask`` (uint8) and the original size."""
+    ``valid_region_mask`` (uint8) and the original size. ``valid`` is the unpadded valid-region
+    slice (a cached ``valid_region_mask``; it must be all 1: the real image region); default 1."""
     if image.ndim != 3 or label.shape != image.shape[1:] or brain.shape != image.shape[1:]:
         raise ValueError("image must be (C, H, W) and masks (H, W) on the same grid")
     img, size = pad_to_multiple(np.asarray(image, dtype=np.float32), multiple)
-    valid = np.ones(size, np.uint8)
+    if valid is None:
+        valid = np.ones(size, np.uint8)
+    else:
+        valid = np.asarray(valid, dtype=np.uint8)
+        if valid.shape != size or not (valid == 1).all():
+            raise ValueError("valid_region_mask of an unpadded slice must be all 1")
     out = {
         "image": img,
         "label": pad_to_multiple(np.asarray(label).astype(np.uint8), multiple)[0],

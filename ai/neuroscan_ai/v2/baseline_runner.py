@@ -2,8 +2,16 @@
 
 Order (``run_baseline``), nothing opens data or builds a model before step 8:
 1 load ``configs/v2/2d_baseline.yaml`` 2 ``validate_policy_config`` 3 architecture / parameter count
-(analytic, no model built) 4 every hyperparameter 5 RunPlan 6 pre-run manifest 7 gate approval
-8 ``BaselineRunner.run``: approval re-verified, then datasets and the model are created.
+(analytic, no model built) 4 every hyperparameter and the operational blocks (cache, progress,
+resume, resource monitor, host memory guard) 5 RunPlan 6 pre-run manifest 7 gate approval
+8 ``BaselineRunner.run``: approval re-verified, the disk cache passes its integrity gate
+(``baseline_cache.verify_cache``) against the pre-run input hashes, then the memory-mapped
+datasets and the model are created.
+
+Data: ``disk_backed_preprocessed_cache_v1`` (built beforehand by
+``scripts/prepare_v2_2d_cache.py``). Only small per-case metadata stays in RAM; at most 2 cases'
+memory maps are open; a batch copies
+only its slices. Per-epoch validation keeps one case's original-grid arrays at a time.
 
 Training: AdamW, cosine schedule stepped per epoch, masked Dice + masked BCE (1:1), gradient
 clipping (L2, 1.0), deterministic brain-slice sampling (positive fraction 0.5), checkpoint
@@ -11,9 +19,22 @@ selection on validation at threshold 0.5 (ungated, ``baseline_selection.select_c
 early stopping after 20 epochs without a new selected epoch. Final validation outputs are written
 on the original grid from the selected (best) model. Threshold search is not run here.
 
+After EVERY completed epoch (operational records, never part of a result hash):
+``training/resume_checkpoint.pt`` (atomic, ``baseline_resume``) then ``training/progress.json``
+(atomic, ``baseline_progress``) with RAM / VRAM readings (``resource_monitor``). Then, if more
+epochs remain, the host memory guard (``host_memory_guard_v1``: available RAM < 4 GiB) and any
+SIGINT / SIGTERM request are checked; either stops the run safely: an interruption record and a
+segment post-run manifest are written (status ``interrupted_resource_guard`` / ``interrupted``,
+``resume_allowed: true``). Nothing resumes automatically and nothing (batch size, cache limit,
+learning rate, ...) is adjusted. ``resume_baseline`` continues such a run only when explicitly
+called and when every identity check passes (``run_control.resume_controlled`` +
+``resume_preflight``); the resumed result equals an uninterrupted run (exact match, synthetic test).
+
 A failure (any exception, incl. CUDA OOM or a deterministic-algorithm error) writes
 ``training/failure_record.json`` (stage, error type, redacted message, output hashes so far) and
-re-raises; the lifecycle then writes the failed post-run manifest. Nothing is retried or adjusted.
+re-raises; the lifecycle then writes the failed post-run manifest (a failed run is never
+resumed). Nothing is retried or adjusted. A forced stop (second signal, SIGKILL, process reaper)
+writes nothing; only the last completed epoch's resume checkpoint is then trusted.
 
 Device policy ``device_policy_v2_baseline_cuda_required_v1``: the dataset profile is derived from
 the plan's inputs (``dataset_profile``), not declared by the caller. A formal ISLES profile needs
@@ -27,10 +48,11 @@ before the gate (no run folder, run ID unused). Synthetic profiles may use any a
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -38,31 +60,64 @@ from typing import Any
 import torch
 import yaml
 
-from neuroscan_ai.reproducibility import PathRoots, case_keys
+from neuroscan_ai.reproducibility import PathRoots
 from neuroscan_ai.reproducibility.environment import capture_determinism
 from neuroscan_ai.reproducibility.hashing import canonical_json_sha256, sha256_file
 from neuroscan_ai.run_control import build_plan, run_controlled
 from neuroscan_ai.run_control.gate import GateResult, verify_approval
-from neuroscan_ai.run_control.outputs import run_output_path
+from neuroscan_ai.run_control.lifecycle import (
+    INTERRUPTED,
+    INTERRUPTED_RESOURCE_GUARD,
+    POST_RUN_NAME,
+    SEGMENTS_DIR,
+    RunInterrupted,
+    resume_controlled,
+)
+from neuroscan_ai.run_control.outputs import (
+    AGGREGATE_KIND,
+    IMAGE_KINDS,
+    METRIC_KIND,
+    run_output_path,
+)
 from neuroscan_ai.run_control.plan import RunPlan
+from neuroscan_ai.v2 import baseline_cache as bc
 from neuroscan_ai.v2 import baseline_dataset as bd
 from neuroscan_ai.v2 import baseline_inference as bi
+from neuroscan_ai.v2 import baseline_progress as bp
+from neuroscan_ai.v2 import baseline_resume as brs
 from neuroscan_ai.v2 import baseline_training as bt
+from neuroscan_ai.v2 import resource_monitor as rm
 from neuroscan_ai.v2.baseline_preprocess import (
     BRAIN_MASK_POLICY,
     PREPROCESS_POLICY,
     validate_policy_config,
 )
 from neuroscan_ai.v2.baseline_selection import select_checkpoint
-from neuroscan_ai.v2.dataset import CaseFiles
 from neuroscan_ai.v2.outputs import write_aggregate, write_case_outputs, write_json_new
-from neuroscan_ai.v2.unet_2d import CHANNELS, MODEL_ID, build_model, describe
+from neuroscan_ai.v2.safety_metrics import POSITIVE_CASE
+from neuroscan_ai.v2.unet_2d import CHANNELS, EXPECTED_PARAMETERS, MODEL_ID, build_model, describe
 
 RUNNER_KIND = "v2_2d_baseline_runner"
 CHECKPOINT_SCHEMA = "neuroscan-v2-baseline-checkpoint-v1"
+INTERRUPTION_SCHEMA = "neuroscan-v2-baseline-interruption-v1"
 SYNTHETIC_DATASET = bt.PROFILE_SYNTHETIC
 TIMING_NAME = "training/timing_record.json"  # wall-clock audit; not a hashed output
+INTERRUPTION_NAME = "interruption_record.json"  # inside segments/segment_NN/
+OPERATIONAL_BLOCKS: dict[str, dict[str, Any]] = {
+    "cache": bc.CACHE_POLICY,
+    "progress": bp.PROGRESS_POLICY,
+    "resume": brs.RESUME_POLICY,
+    "resource_monitor": rm.RESOURCE_MONITOR,
+    "host_memory_guard": rm.HOST_MEMORY_GUARD,
+}
 _ABS_PATH = re.compile(r"([A-Za-z]:[\\/])|(^|[\s'\"(])/[^\s]")
+
+
+def validate_operational_config(cfg: Mapping[str, Any]) -> None:
+    """Cache / progress / resume / resource / guard blocks must equal the code (no tuning)."""
+    errs = [k for k, v in OPERATIONAL_BLOCKS.items() if cfg.get(k) != v]
+    if errs:
+        raise bt.ConfigValidationError("operational config differs from code: " + ", ".join(errs))
 
 
 def prepare_config(config_path: Path) -> dict[str, Any]:
@@ -71,6 +126,7 @@ def prepare_config(config_path: Path) -> dict[str, Any]:
     validate_policy_config(cfg)
     bt.validate_architecture(cfg)
     bt.validate_hyperparameters(cfg)
+    validate_operational_config(cfg)
     return cfg
 
 
@@ -113,17 +169,25 @@ def _hash_outputs(run_dir: Path) -> dict[str, str]:
     }
 
 
+def _segment_count(run_dir: Path) -> int:
+    d = Path(run_dir) / SEGMENTS_DIR
+    return sum(1 for p in d.iterdir() if p.is_dir()) if d.is_dir() else 0
+
+
 @dataclass
 class BaselineRunner:
     config: Mapping[str, Any]
-    case_files: Mapping[str, CaseFiles]  # alias -> files (never written to any output)
+    cache_dir: Path  # verified disk cache (never written by the runner)
     device: str | None = None  # execution device override (default: config)
     epoch_limit: int | None = None  # synthetic tests only
     dataset_profile: str = bt.PROFILE_FORMAL  # set by run_baseline; formal unless proven synthetic
     forbidden_ids: tuple[str, ...] = ()
     kind: str = RUNNER_KIND
     training_outputs: str = "baseline_v1"
+    memory_probe: Callable[[], int | None] = rm.system_available_memory_bytes
+    handle_signals: bool = True
     _stage: str = field(default="not_started", init=False)
+    _preflight_cache: Any = field(default=None, init=False, repr=False)
 
     @property
     def seed(self) -> int:
@@ -145,12 +209,23 @@ class BaselineRunner:
             batch_size=int(tr["batch_size"]),
         )
 
-    # ------------------------------------------------------------ run-control entry point
+    # ------------------------------------------------------------ run-control entry points
     def run(self, gate: GateResult, plan: RunPlan) -> None:
         verify_approval(gate)  # before any data or model is touched
+        self._guarded(gate, plan, resume=False)
+
+    def resume(self, gate: GateResult, plan: RunPlan) -> None:
+        """Explicit resume (``resume_baseline`` -> ``resume_controlled`` -> preflight first)."""
+        verify_approval(gate)
+        self._guarded(gate, plan, resume=True)
+
+    def _guarded(self, gate: GateResult, plan: RunPlan, resume: bool) -> None:
         try:
-            self._run(gate, plan)
-        except BaseException as e:
+            with brs.InterruptController(self.handle_signals) as ctl:
+                self._run(gate, plan, ctl, resume)
+        except RunInterrupted:
+            raise
+        except Exception as e:  # a forced KeyboardInterrupt / SystemExit writes nothing
             self._write_failure(gate, plan, e)
             raise
 
@@ -174,8 +249,142 @@ class BaselineRunner:
         }
         write_json_new(path, record)
 
+    # ------------------------------------------------------------ cache / identity
+    def _verify_cache(self, plan: RunPlan, pre: Mapping[str, Any]) -> bc.VerifiedCache:
+        return bc.verify_cache(
+            self.cache_dir,
+            config=self.config,
+            split_file=plan.split_file,
+            train_aliases=plan.aliases,
+            val_aliases=plan.validation_aliases,
+            input_sha256=pre.get("inputs", {}).get("file_sha256", {}),
+            package_lock_sha256_lf=pre.get("environment", {}).get("package_lock_sha256_lf"),
+            git_commit=pre.get("source_control", {}).get("git_commit"),
+        )
+
+    def _n_epochs(self) -> tuple[int, int]:
+        max_epochs = int(self.config["training"]["max_epochs"])
+        n = min(max_epochs, self.epoch_limit) if self.epoch_limit else max_epochs
+        return max_epochs, n
+
+    def _identity(self, plan: RunPlan, pre: Mapping[str, Any], index_sha: str) -> dict[str, Any]:
+        split = json.loads(Path(plan.split_file).read_text(encoding="utf-8"))
+        env = dict(pre.get("environment", {}))
+        inputs = pre.get("inputs", {})
+        return {
+            "schema": brs.RESUME_SCHEMA,
+            "run_id": plan.run_id,
+            "seed": self.seed,
+            "epoch_limit": self.epoch_limit,
+            "max_epochs": self._n_epochs()[0],
+            "config_canonical_sha256": canonical_json_sha256(dict(self.config)),
+            "split_canonical_sha256": canonical_json_sha256(split),
+            "alias_list_sha256": inputs.get("alias_list_sha256"),
+            "input_aggregate_sha256": canonical_json_sha256(inputs.get("file_sha256", {})),
+            "cache_index_sha256": index_sha,
+            "package_lock_sha256_lf": env.get("package_lock_sha256_lf"),
+            "git_commit": pre.get("source_control", {}).get("git_commit"),
+            "environment": env,
+            "determinism": dict(pre.get("determinism", {})),
+            "model_id": MODEL_ID,
+            "parameter_count": EXPECTED_PARAMETERS,
+            "preprocessing_policy": PREPROCESS_POLICY,
+            "brain_mask_policy": BRAIN_MASK_POLICY,
+            "threshold_policy": bt.THRESHOLD_SOURCE,
+            "sampling_policy": bd.SAMPLING_POLICY,
+        }
+
+    def resume_preflight(self, gate: GateResult, plan: RunPlan) -> list[str]:
+        """Every runner-side resume condition, checked BEFORE the lifecycle starts the segment
+        (a refusal here writes nothing). Returns reason codes (empty = resume allowed)."""
+        run_dir = gate.run_dir
+        pre = gate.pre_run or {}
+        if plan.run_id in brs.RETIRED_RUN_IDS:
+            return ["run_id_retired"]
+        reasons = []
+        if (run_dir / POST_RUN_NAME).exists():
+            reasons.append("run_already_finalised")
+        if run_output_path(run_dir, "failure_record").exists():
+            reasons.append("run_failed_not_resumable")
+        if not (run_dir / brs.RESUME_NAME).is_file():
+            reasons.append("resume_checkpoint_missing")
+        if not (run_dir / bp.PROGRESS_NAME).is_file():
+            reasons.append("progress_missing")
+        finals = [
+            label
+            for label in (
+                "best_checkpoint",
+                "last_checkpoint",
+                "training_history",
+                "validation_metrics",
+                "sampler_record",
+                "threshold_record",
+            )
+            if run_output_path(run_dir, label).exists()
+        ]
+        if (
+            finals
+            or (run_dir / AGGREGATE_KIND).exists()
+            or any((run_dir / k).exists() for k in (*IMAGE_KINDS, METRIC_KIND))
+        ):
+            reasons.append("final_outputs_present")
+        if not run_output_path(run_dir, "preprocessing_record").is_file():
+            reasons.append("preprocessing_record_missing")
+        if reasons:
+            return reasons
+        try:
+            payload = brs.load_resume_checkpoint(run_dir / brs.RESUME_NAME)
+            progress = bp.read_progress(run_dir / bp.PROGRESS_NAME)
+        except brs.ResumeRefused as e:
+            return list(e.reasons)
+        except (OSError, ValueError):
+            return ["progress_unreadable"]
+        try:
+            verified = self._verify_cache(plan, pre)
+        except bc.CacheError as e:
+            return ["cache_integrity_failed", *e.reasons[:20]]
+        identity = self._identity(plan, pre, verified.index_sha256)
+        reasons = brs.check_resume_identity(payload, identity)
+        done = payload.get("completed_epoch")
+        if progress.get("run_id") != plan.run_id or progress.get("completed_epoch") != done:
+            reasons.append("progress_checkpoint_epoch_mismatch")
+        if progress.get("status") == "training_completed":
+            reasons.append("training_already_completed")
+        reasons += self._state_reasons(payload, verified, plan)
+        self._preflight_cache = verified if not reasons else None
+        return reasons
+
+    def _state_reasons(self, payload, verified, plan) -> list[str]:
+        """Sampler / history / selection consistency of a resume payload."""
+        reasons = []
+        done = payload.get("completed_epoch")
+        if not isinstance(done, int) or done < 1 or payload.get("next_epoch") != done + 1:
+            return ["resume_epoch_invalid"]
+        n = len(payload.get("history", []))
+        if n != done or len(payload.get("selection_records", [])) != done:
+            reasons.append("history_length_mismatch")
+        sampling = payload.get("sampling", [])
+        if len(sampling) != done:
+            reasons.append("sampler_state_length_mismatch")
+        else:
+            train, _ = bc.open_cases(verified, bc.CacheStore(verified.root))
+            frac = float(self.config["training"]["sampling"]["positive_fraction"])
+            for rec in sampling:
+                _, regen = bd.epoch_sampling(train, self.seed, rec.get("epoch"), frac)
+                if regen != rec:
+                    reasons.append("sampler_state_invalid")
+                    break
+            if sampling and payload.get("last_sampling_list_sha256") != sampling[-1].get(
+                "slice_list_sha256"
+            ):
+                reasons.append("sampling_list_hash_mismatch")
+        records = payload.get("selection_records", [])
+        if records and select_checkpoint(records) != payload.get("best_selection"):
+            reasons.append("selection_state_mismatch")
+        return reasons
+
     # ------------------------------------------------------------ training
-    def _run(self, gate: GateResult, plan: RunPlan) -> None:
+    def _run(self, gate: GateResult, plan: RunPlan, ctl=None, resume: bool = False) -> None:
         cfg = self.config
         tr = cfg["training"]
         if plan.dataset_id != SYNTHETIC_DATASET:  # defence in depth (run_baseline checks first)
@@ -187,50 +396,101 @@ class BaselineRunner:
         pre = gate.pre_run or {}
         device = bt.resolve_device(effective)
         bt.apply_determinism(self.seed)
+        t0_run = time.perf_counter()
+        needles = (*plan.all_aliases, *self.forbidden_ids)
 
-        self._stage = "data_loading"
-        keys = case_keys(plan.all_aliases)
-        train = bd.load_cases({a: self.case_files[a] for a in plan.aliases}, keys)
-        val = bd.load_cases({a: self.case_files[a] for a in plan.validation_aliases}, keys)
-        if not any(c.original_gt.any() for c in val):
-            raise bi.MissingValidationResultError("all validation cases are lesion-free; refused")
-        write_json_new(
-            run_output_path(run_dir, "preprocessing_record"),
-            {
-                "preprocess_policy": PREPROCESS_POLICY,
-                "brain_mask_policy": BRAIN_MASK_POLICY,
-                "train_cases": [c.record for c in train],
-                "validation_cases": [c.record for c in val],
-                "inputs_modified": False,
-            },
+        self._stage = "cache_integrity"
+        verified = self._preflight_cache if resume and self._preflight_cache else None
+        verified = verified or self._verify_cache(plan, pre)
+        store = bc.CacheStore(
+            verified.root, cfg["cache"]["mmap_mode"], int(cfg["cache"]["max_active_cases"])
         )
+        self._stage = "data_loading"
+        train, val = bc.open_cases(verified, store)
+        if not any(c.ground_truth_status == POSITIVE_CASE for c in val):
+            raise bi.MissingValidationResultError("all validation cases are lesion-free; refused")
+        prep = {
+            "preprocess_policy": PREPROCESS_POLICY,
+            "brain_mask_policy": BRAIN_MASK_POLICY,
+            "train_cases": [c.record for c in train],
+            "validation_cases": [c.record for c in val],
+            "inputs_modified": False,
+            "cache": {
+                "policy_id": bc.CACHE_POLICY_ID,
+                "cache_index_sha256": verified.index_sha256,
+                "transpose_policy_id": bc.TRANSPOSE_POLICY,
+                "max_active_cases": store.max_active_cases,
+            },
+        }
+        prep_path = run_output_path(run_dir, "preprocessing_record")
+        if resume:
+            stored = json.loads(prep_path.read_text(encoding="utf-8"))
+            if canonical_json_sha256(stored) != canonical_json_sha256(prep):
+                raise brs.ResumeRefused(["preprocessing_record_mismatch"])
+        else:
+            write_json_new(prep_path, prep)
 
         self._stage = "model_build"
         model = build_model(self.seed).to(device)
         info = describe(model, self.seed)
+        if info["trainable_parameters"] != EXPECTED_PARAMETERS:
+            raise bt.ConfigValidationError("parameter count differs from approval")
         opt = bt.build_optimizer(model)
         sched = bt.build_scheduler(opt)
-        max_epochs = int(tr["max_epochs"])
-        n_epochs = min(max_epochs, self.epoch_limit) if self.epoch_limit else max_epochs
+        max_epochs, n_epochs = self._n_epochs()
         patience = int(tr["early_stopping_patience"])
         batch = int(tr["batch_size"])
         frac = float(tr["sampling"]["positive_fraction"])
+        identity = self._identity(plan, pre, verified.index_sha256)
+        st: dict[str, Any] = {
+            "history": [],
+            "sampling": [],
+            "records": [],
+            "timing": [],
+            "best_state": None,
+            "best_sel": None,
+            "elapsed_before": 0.0,
+        }
+        start_epoch, finished, stopped_early = 1, False, False
+        if resume:
+            self._stage = "resume_load"
+            payload = brs.load_resume_checkpoint(run_dir / brs.RESUME_NAME)
+            reasons = brs.check_resume_identity(payload, identity)
+            reasons += self._state_reasons(payload, verified, plan)
+            if reasons:
+                raise brs.ResumeRefused(reasons)
+            model.load_state_dict(payload["model_state"])
+            opt.load_state_dict(payload["optimizer_state"])
+            sched.load_state_dict(payload["scheduler_state"])
+            st.update(
+                history=payload["history"],
+                sampling=payload["sampling"],
+                records=payload["selection_records"],
+                timing=payload["timing"],
+                best_state=payload["best_state"],
+                best_sel=payload["best_selection"],
+                elapsed_before=float(payload["elapsed_seconds"]),
+            )
+            start_epoch = payload["next_epoch"]
+            finished, stopped_early = payload["training_finished"], payload["stopped_early"]
+            brs.restore_rng(payload["rng_state"])
+        rm.reset_cuda_peak(device)
 
         self._stage = "training_loop"
-        history, sampling, records, timing = [], [], [], []
-        best_state = best_sel = None
-        stopped_early = False
-        for epoch in range(1, n_epochs + 1):
+        epoch = start_epoch - 1
+        for epoch in range(start_epoch, n_epochs + 1):
+            if finished:
+                break
             t0 = time.perf_counter()
             lr = float(opt.param_groups[0]["lr"])
             order, srec = bd.epoch_sampling(train, self.seed, epoch, frac)
-            sampling.append(srec)
+            st["sampling"].append(srec)
             tm = bt.train_one_epoch(model, bd.batches(train, order, batch), opt, device)
             sched.step()
             vloss = bi.validation_loss(model, val, device, batch)
-            ev = bi.evaluate(model, val, device, batch)
+            ev = bi.evaluate(model, val, device, batch, keep_outputs=False)
             u = ev["ungated_summary"]
-            records.append(
+            st["records"].append(
                 {
                     "epoch": epoch,
                     "mean_dice_positive": u["mean_dice_positive"],
@@ -240,11 +500,11 @@ class BaselineRunner:
                     "output": "ungated",
                 }
             )
-            sel = select_checkpoint(records)
+            sel = select_checkpoint(st["records"])
             if sel["selected_epoch"] == epoch:
-                best_state = _snapshot(model, opt, sched)
-                best_sel = sel
-            history.append(
+                st["best_state"] = _snapshot(model, opt, sched)
+                st["best_sel"] = sel
+            st["history"].append(
                 {
                     "epoch": epoch,
                     **{k: tm[k] for k in ("train_loss_total", "train_loss_dice", "train_loss_bce")},
@@ -262,12 +522,41 @@ class BaselineRunner:
                     "selected_epoch_so_far": sel["selected_epoch"],
                 }
             )
-            timing.append({"epoch": epoch, "duration_seconds": time.perf_counter() - t0})
-            if bt.early_stop(epoch, sel["selected_epoch"], patience):
-                stopped_early = True
+            del ev
+            st["timing"].append({"epoch": epoch, "duration_seconds": time.perf_counter() - t0})
+            stopped_early = bt.early_stop(epoch, sel["selected_epoch"], patience)
+            finished = stopped_early or epoch == n_epochs
+            elapsed = st["elapsed_before"] + time.perf_counter() - t0_run
+            ckpt_sha = self._save_resume(
+                run_dir,
+                identity,
+                model,
+                opt,
+                sched,
+                st,
+                epoch,
+                srec,
+                finished,
+                stopped_early,
+                elapsed,
+            )
+            status, guard = "running", None
+            if not finished:
+                guard = rm.check_host_memory(self.memory_probe())
+                if guard["triggered"]:
+                    status = INTERRUPTED_RESOURCE_GUARD
+                elif ctl is not None and ctl.requested:
+                    status = INTERRUPTED
+            self._write_progress(run_dir, plan, status, st, device, elapsed, needles)
+            if status != "running":
+                self._interrupt(run_dir, plan, status, epoch, ctl, guard, ckpt_sha, needles)
+            if finished:
                 break
-        last_epoch = history[-1]["epoch"]
+        if not st["history"]:
+            raise bt.TrainingStop("no completed epoch")
+        last_epoch = st["history"][-1]["epoch"]
         last_state = _snapshot(model, opt, sched)
+        best_state, best_sel = st["best_state"], st["best_sel"]
 
         self._stage = "checkpoints"
         common = self._checkpoint_common(plan, pre, info, device)
@@ -290,14 +579,14 @@ class BaselineRunner:
                 "early_stopping_patience": patience,
                 "stopped_early": stopped_early,
                 "selection": best_sel,
-                "epochs": history,
+                "epochs": st["history"],
                 "duration_recorded_in": TIMING_NAME + " (wall clock; excluded from exact match)",
             },
         )
-        write_json_new(run_dir / TIMING_NAME, {"epochs": timing})
+        write_json_new(run_dir / TIMING_NAME, {"epochs": st["timing"]})
         write_json_new(
             run_output_path(run_dir, "sampler_record"),
-            {"policy": bd.SAMPLING_POLICY, "seed": self.seed, "epochs": sampling},
+            {"policy": bd.SAMPLING_POLICY, "seed": self.seed, "epochs": st["sampling"]},
         )
         write_json_new(
             run_output_path(run_dir, "threshold_record"),
@@ -313,6 +602,129 @@ class BaselineRunner:
         model.load_state_dict(best_state["model"])
         ev = bi.evaluate(model, val, device, batch)  # selected model, re-evaluated
         self._write_validation(run_dir, val, ev, best_sel)
+        del ev
+        elapsed = st["elapsed_before"] + time.perf_counter() - t0_run
+        self._write_progress(run_dir, plan, "training_completed", st, device, elapsed, needles)
+        store.close()
+
+    # ------------------------------------------------------------ operational records
+    def _save_resume(
+        self,
+        run_dir,
+        identity,
+        model,
+        opt,
+        sched,
+        st,
+        epoch,
+        srec,
+        finished,
+        stopped_early,
+        elapsed,
+    ) -> str:
+        best = st["best_sel"]["selected_epoch"]
+        snap = _snapshot(model, opt, sched)
+        payload = {
+            **identity,
+            "completed_epoch": epoch,
+            "next_epoch": epoch + 1,
+            "training_finished": finished,
+            "stopped_early": stopped_early,
+            "model_state": snap["model"],
+            "optimizer_state": snap["optimizer"],
+            "scheduler_state": snap["scheduler"],
+            "best_state": st["best_state"],
+            "best_selection": st["best_sel"],
+            "best_epoch": best,
+            "early_stopping_counter": epoch - best,
+            "selection_records": st["records"],
+            "history": st["history"],
+            "sampling": st["sampling"],
+            "last_sampling_list_sha256": srec["slice_list_sha256"],
+            "timing": st["timing"],
+            "elapsed_seconds": float(elapsed),
+            "rng_state": brs.capture_rng(),
+            "created_at_utc": bp.utc_now(),
+        }
+        return brs.save_resume_checkpoint(run_dir / brs.RESUME_NAME, payload)
+
+    def _write_progress(self, run_dir, plan, status, st, device, elapsed, needles) -> None:
+        h = st["history"][-1]
+        best = st["best_sel"]["selected_epoch"]
+        host = rm.host_memory()
+        cuda = rm.cuda_memory(device)
+        record = {
+            "schema": bp.PROGRESS_SCHEMA,
+            "run_id": plan.run_id,
+            "status": status,
+            "completed_epoch": h["epoch"],
+            "max_epochs": self._n_epochs()[1],
+            "best_epoch": best,
+            "early_stopping_counter": h["epoch"] - best,
+            "latest_train_loss_total": h["train_loss_total"],
+            "latest_train_loss_dice": h["train_loss_dice"],
+            "latest_train_loss_bce": h["train_loss_bce"],
+            "latest_validation_loss": h["validation_loss_total"],
+            "latest_validation_mean_positive_case_dice": h["validation_mean_positive_case_dice"],
+            "latest_false_positive_voxel_volume_ml": h[
+                "validation_total_false_positive_voxel_volume_ml"
+            ],
+            "latest_lesion_wise_recall": h["validation_lesion_wise_recall"],
+            "learning_rate": h["learning_rate"],
+            "gradient_norm": h["gradient_norm"],
+            "sampled_positive_ratio": h["sampled_positive_ratio"],
+            "epoch_duration_seconds": st["timing"][-1]["duration_seconds"],
+            "elapsed_seconds": float(elapsed),
+            **host,
+            **cuda,
+            "updated_at_utc": bp.utc_now(),
+        }
+        bp.write_progress(run_dir / bp.PROGRESS_NAME, record, needles)
+
+    def _interrupt(self, run_dir, plan, status, epoch, ctl, guard, ckpt_sha, needles) -> None:
+        seg = run_dir / SEGMENTS_DIR / f"segment_{_segment_count(run_dir) + 1:02d}"
+        seg.mkdir(parents=True)
+        reason = (
+            "host_memory_guard"
+            if status == INTERRUPTED_RESOURCE_GUARD
+            else (ctl.reason if ctl is not None else None)
+        )
+        record = {
+            "schema": INTERRUPTION_SCHEMA,
+            "run_id": plan.run_id,
+            "status": status,
+            "reason": reason,
+            "completed_epoch": epoch,
+            "next_epoch": epoch + 1,
+            "resume_allowed": True,
+            "automatic_resume": False,
+            "retried": False,
+            "batch_size_changed": False,
+            "cache_limit_changed": False,
+            "host_memory_guard": guard,
+            "resume_checkpoint_sha256": ckpt_sha,
+            "progress_sha256": sha256_file(run_dir / bp.PROGRESS_NAME),
+            "uncatchable_stops": "SIGKILL / process reaper: nothing written; last completed "
+            "epoch's resume checkpoint only",
+            "created_at_utc": bp.utc_now(),
+        }
+        text = json.dumps(record, indent=2)
+        bp.check_public_text(text, needles)
+        write_json_new(seg / INTERRUPTION_NAME, record)
+        raise RunInterrupted(
+            status,
+            seg,
+            {
+                "segment": seg.name,
+                "reason": reason,
+                "completed_epoch": epoch,
+                "resume_allowed": True,
+                "interruption_record_sha256": hashlib.sha256(
+                    (seg / INTERRUPTION_NAME).read_bytes()
+                ).hexdigest(),
+                "resume_checkpoint_sha256": ckpt_sha,
+            },
+        )
 
     # ------------------------------------------------------------ helpers
     def _checkpoint_common(self, plan, pre, info, device) -> dict[str, Any]:
@@ -408,29 +820,31 @@ class BaselineRunner:
         write_aggregate(run_dir, {**summary, "validation_cases": len(per_case)})
 
 
+def _cpu_copy(obj: Any) -> Any:
+    """Deep copy with every tensor on the CPU, so a snapshot (and any checkpoint written from it)
+    is the same whether it stayed in memory or went through a resume checkpoint."""
+    if isinstance(obj, torch.Tensor):
+        return obj.detach().cpu().clone()
+    if isinstance(obj, dict):
+        return {k: _cpu_copy(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_cpu_copy(v) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_cpu_copy(v) for v in obj)
+    return copy.deepcopy(obj)
+
+
 def _snapshot(model, opt, sched) -> dict[str, Any]:
     return {
         "model": {k: v.detach().cpu().clone() for k, v in model.state_dict().items()},
-        "optimizer": copy.deepcopy(opt.state_dict()),
+        "optimizer": _cpu_copy(opt.state_dict()),
         "scheduler": copy.deepcopy(sched.state_dict()),
     }
 
 
-def run_baseline(
-    config_path: Path,
-    plan_kwargs: Mapping[str, Any],
-    case_files: Mapping[str, CaseFiles],
-    *,
-    repo_root: Path,
-    roots: PathRoots,
-    source_control: Mapping[str, Any],
-    environment: Mapping[str, Any],
-    determinism: Mapping[str, Any],
-    forbidden_ids: Iterable[str] = (),
-    device: str | None = None,
-    epoch_limit: int | None = None,
-) -> dict[str, Any]:
-    """Config checks (1-4) -> RunPlan (5) -> gate + manifests (6-7) -> runner (8)."""
+def _build(
+    config_path, plan_kwargs, cache_dir, repo_root, forbidden_ids, device, epoch_limit, memory_probe
+):
     cfg = prepare_config(config_path)
     plan = build_plan(
         **{
@@ -445,17 +859,94 @@ def run_baseline(
     bt.check_device_policy(profile, cfg["training"]["device"], device, epoch_limit)
     runner = BaselineRunner(
         cfg,
-        case_files,
+        Path(cache_dir),
         device=device,
         epoch_limit=epoch_limit,
         forbidden_ids=tuple(forbidden_ids),
         dataset_profile=profile,
+        **({"memory_probe": memory_probe} if memory_probe is not None else {}),
     )
+    return plan, runner
+
+
+def run_baseline(
+    config_path: Path,
+    plan_kwargs: Mapping[str, Any],
+    cache_dir: Path,
+    *,
+    repo_root: Path,
+    roots: PathRoots,
+    source_control: Mapping[str, Any],
+    environment: Mapping[str, Any],
+    determinism: Mapping[str, Any],
+    forbidden_ids: Iterable[str] = (),
+    device: str | None = None,
+    epoch_limit: int | None = None,
+    memory_probe: Callable[[], int | None] | None = None,
+) -> dict[str, Any]:
+    """Config checks (1-4) -> RunPlan (5) -> gate + manifests (6-7) -> runner (8)."""
+    plan, runner = _build(
+        config_path,
+        plan_kwargs,
+        cache_dir,
+        repo_root,
+        forbidden_ids,
+        device,
+        epoch_limit,
+        memory_probe,
+    )
+    if plan.run_id in brs.RETIRED_RUN_IDS:
+        raise bt.ConfigValidationError("run ID is retired and may not be reused")
+    # cache commit binding BEFORE the gate: a refusal creates nothing and keeps the run ID unused
+    reasons = bc.check_cache_commit(cache_dir, source_control)
+    if reasons:
+        raise bc.CacheCommitError(reasons)
     return run_controlled(
         plan,
         runner,
         repo_root=repo_root,
         roots=roots,
+        source_control=source_control,
+        environment=environment,
+        determinism=determinism,
+        forbidden_ids=forbidden_ids,
+    )
+
+
+def resume_baseline(
+    config_path: Path,
+    plan_kwargs: Mapping[str, Any],
+    cache_dir: Path,
+    *,
+    repo_root: Path,
+    source_control: Mapping[str, Any],
+    environment: Mapping[str, Any],
+    determinism: Mapping[str, Any],
+    forbidden_ids: Iterable[str] = (),
+    device: str | None = None,
+    epoch_limit: int | None = None,
+    memory_probe: Callable[[], int | None] | None = None,
+) -> dict[str, Any]:
+    """EXPLICIT resume of an interrupted run (same run ID, same plan). Never called
+    automatically; raises ``run_control.lifecycle.ResumeRefusedError`` on any mismatch."""
+    plan, runner = _build(
+        config_path,
+        plan_kwargs,
+        cache_dir,
+        repo_root,
+        forbidden_ids,
+        device,
+        epoch_limit,
+        memory_probe,
+    )
+    if plan.run_id in brs.RETIRED_RUN_IDS:
+        from neuroscan_ai.run_control.lifecycle import ResumeRefusedError  # noqa: PLC0415
+
+        raise ResumeRefusedError(["run_id_retired"])
+    return resume_controlled(
+        plan,
+        runner,
+        repo_root=repo_root,
         source_control=source_control,
         environment=environment,
         determinism=determinism,
