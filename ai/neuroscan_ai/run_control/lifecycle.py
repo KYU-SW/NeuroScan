@@ -140,6 +140,8 @@ def run_controlled(
     runner_seed = getattr(runner, "seed", None)
     if determinism.get("seed") is not None and determinism.get("seed") != runner_seed:
         raise ValueError("declared determinism seed differs from the runner seed")
+    if getattr(plan, "seed", None) is not None and plan.seed != runner_seed:
+        raise ValueError("run plan seed differs from the runner seed")  # before the gate
     determinism = {**determinism, "seed": runner_seed}
     # a runner that controls framework settings applies them now, so both manifests record the
     # state the run actually uses (not the state before the runner configured it)
@@ -326,6 +328,10 @@ def resume_controlled(
     if hasattr(runner, "apply_determinism"):
         determinism = {**determinism, **runner.apply_determinism(), "seed": runner_seed}
     reasons: list[str] = []
+    if getattr(plan, "seed", None) is not None and plan.seed != runner_seed:
+        reasons.append("seed_plan_runner_mismatch")
+    if pre.get("determinism", {}).get("seed") != runner_seed:
+        reasons.append("seed_mismatch")  # resume must use the seed the run started with
     ident = pre.get("identity", {})
     if ident.get("run_id") != plan.run_id:
         reasons.append("run_id_mismatch")

@@ -2,8 +2,8 @@
 
   validate            steps 1-4 only: load configs/v2/2d_baseline.yaml, policy / architecture /
                       hyperparameter / operational-block checks. Opens no data, builds no model.
-  run --run-id ID --alias-map PATH --split PATH --package-lock-sha256 HEX --cache-dir DIR
-      [--device cuda]
+  run --run-id ID --seed N --alias-map PATH --split PATH --package-lock-sha256 HEX
+      --cache-dir DIR [--device cuda]
                       one manifest-gated training run (results/v2_runs/ID/), then verify_run.
                       The alias map (alias -> case id) and the alias-only split must already exist
                       under the git-ignored results/v2_runs/_internal/; the disk cache under
@@ -15,6 +15,12 @@
                       commit, clean tree, config, split, inputs, cache, package lock, environment,
                       determinism; see docs/v2_2d_baseline_run_protocol.md section 13.7). Never
                       started automatically; any mismatch is refused and nothing is written.
+
+``--seed`` is REQUIRED (seed_policy_v2_baseline_explicit_run_seed_v1): a non-negative integer
+from the approved formal list 42 / 43 / 44, written in digits. A missing, non-integer, negative or
+unlisted seed is refused before any data access (no run folder, run ID unused). The seed is never
+chosen automatically and never changed after a failure; ``resume`` needs the run's own seed (another
+seed is refused). The config ``training.seed`` (42) is only the reference training policy value.
 
 Formal ISLES runs require device ``cuda`` (device_policy_v2_baseline_cuda_required_v1): an override
 other than ``cuda`` (``cpu``, ``cuda_if_available``) is refused before any data access, no run
@@ -67,6 +73,8 @@ from neuroscan_ai.v2.baseline_training import (  # noqa: E402
     PROFILE_FORMAL,
     ConfigValidationError,
     check_device_policy,
+    check_run_seed,
+    parse_seed_text,
 )
 from neuroscan_ai.v2.dataset import isles_case_files  # noqa: E402
 
@@ -96,12 +104,14 @@ def run(
     cache_dir: Path,
     device: str | None = None,
     resume: bool = False,
+    seed_text: str | None = None,
 ) -> int:
     if run_id in RETIRED_RUN_IDS:
         return _refuse("run ID is retired (never reused, never resumed)")
     cfg = prepare_config(CONFIG)  # refused here (before any plan / gate) on a config mismatch
     try:
         check_device_policy(PROFILE_FORMAL, cfg["training"]["device"], device, None)
+        seed = check_run_seed(PROFILE_FORMAL, parse_seed_text(seed_text))
     except ConfigValidationError as e:
         return _refuse(str(e))
     lock = REPO_ROOT / "requirements-lock.txt"
@@ -141,6 +151,7 @@ def run(
         "validation_aliases": splits["val"],
         "input_files": {a: {"dwi": f.dwi, "adc": f.adc, "gt": f.label} for a, f in files.items()},
         "checkpoint": None,
+        "seed": seed,
         "split_file": split,
         "output_root": OUT_ROOT,
         "expected": {
@@ -157,6 +168,7 @@ def run(
         "determinism": det,
         "forbidden_ids": tuple(amap.values()),
         "device": device,
+        "seed": seed,
     }
     if resume:
         try:
@@ -192,6 +204,8 @@ def main() -> int:
     for name in ("run", "resume"):
         r = sub.add_parser(name)
         r.add_argument("--run-id", required=True)
+        # parsed by baseline_training.parse_seed_text (refusal message + exit code 2, not argparse)
+        r.add_argument("--seed", default=None)
         r.add_argument("--alias-map", required=True, type=Path)
         r.add_argument("--split", required=True, type=Path)
         r.add_argument("--package-lock-sha256", required=True)
@@ -208,6 +222,7 @@ def main() -> int:
         a.cache_dir,
         a.device,
         resume=a.cmd == "resume",
+        seed_text=a.seed,
     )
 
 

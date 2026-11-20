@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -65,6 +66,13 @@ DEVICES = ("cpu", "cuda", "cuda_if_available")  # execution device; not a tuned 
 DEVICE_POLICY = "device_policy_v2_baseline_cuda_required_v1"
 FORMAL_DEVICE = "cuda"  # formal ISLES runs: config device and any override must be cuda
 PROFILE_FORMAL, PROFILE_SYNTHETIC = "formal_isles", "synthetic"
+# Run seed policy: a formal run names its seed explicitly (CLI ``--seed`` -> RunPlan.seed ->
+# BaselineRunner.run_seed); it is never chosen automatically nor changed after a failure. The
+# config ``training.seed`` (42) stays as the reference training policy value only. One seed drives
+# model initialisation, Python / NumPy / Torch CPU / CUDA RNGs and the epoch sampling.
+SEED_POLICY = "seed_policy_v2_baseline_explicit_run_seed_v1"
+FORMAL_SEEDS = (42, 43, 44)  # approved multi-seed set for formal ISLES runs
+_SEED_TEXT = re.compile(r"^[0-9]{1,9}$")
 FIXED_COLLAPSE_POLICY: dict[str, Any] = {
     "stop_immediately": [
         "non_finite_loss",
@@ -226,6 +234,40 @@ def check_device_policy(
     elif profile != PROFILE_SYNTHETIC:
         raise ConfigValidationError(f"unknown dataset profile '{profile}'")
     return effective
+
+
+def parse_seed_text(text: str | None) -> int | None:
+    """CLI text -> seed. Only plain decimal digits are accepted (no sign, no decimal point, no
+    whitespace); ``None`` stays ``None`` (refused later for formal runs)."""
+    if text is None:
+        return None
+    if not isinstance(text, str) or not _SEED_TEXT.match(text):
+        raise ConfigValidationError("seed must be a non-negative integer written in digits")
+    return int(text)
+
+
+def check_run_seed(profile: str, seed: Any) -> int | None:
+    """Run seed for a dataset profile (before the gate; nothing is opened or created).
+
+    Formal ISLES runs: an explicit integer from ``FORMAL_SEEDS`` is required. Synthetic runs: an
+    explicit non-negative integer, or ``None`` (the config reference seed is then used)."""
+    if seed is None:
+        if profile == PROFILE_FORMAL:
+            raise ConfigValidationError(f"formal runs require an explicit --seed ({SEED_POLICY})")
+        if profile != PROFILE_SYNTHETIC:
+            raise ConfigValidationError(f"unknown dataset profile '{profile}'")
+        return None
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ConfigValidationError("seed must be an integer")
+    if seed < 0:
+        raise ConfigValidationError("seed must be non-negative")
+    if profile == PROFILE_FORMAL and seed not in FORMAL_SEEDS:
+        raise ConfigValidationError(
+            f"seed {seed} is not in the approved formal seed list {list(FORMAL_SEEDS)}"
+        )
+    if profile not in (PROFILE_FORMAL, PROFILE_SYNTHETIC):
+        raise ConfigValidationError(f"unknown dataset profile '{profile}'")
+    return seed
 
 
 def early_stop(epoch: int, selected_epoch: int, patience: int) -> bool:

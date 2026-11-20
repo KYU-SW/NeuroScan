@@ -182,6 +182,7 @@ class BaselineRunner:
     epoch_limit: int | None = None  # synthetic tests only
     dataset_profile: str = bt.PROFILE_FORMAL  # set by run_baseline; formal unless proven synthetic
     forbidden_ids: tuple[str, ...] = ()
+    run_seed: int | None = None  # explicit run seed (formal: required, from FORMAL_SEEDS)
     kind: str = RUNNER_KIND
     training_outputs: str = "baseline_v1"
     memory_probe: Callable[[], int | None] = rm.system_available_memory_bytes
@@ -191,7 +192,20 @@ class BaselineRunner:
 
     @property
     def seed(self) -> int:
+        """The one seed of this run (``SEED_POLICY``): the explicit run seed; only a synthetic run
+        without one falls back to the config reference seed."""
+        if self.run_seed is not None:
+            return int(self.run_seed)
         return int(self.config["training"]["seed"])
+
+    def seed_record(self) -> dict[str, Any]:
+        """Seed fields written next to every seeded record (RunPlan / runner / checkpoint seeds
+        must agree; a run seed other than the config reference is the intended explicit seed)."""
+        return {
+            "seed_policy": bt.SEED_POLICY,
+            "run_seed": self.seed,
+            "config_reference_seed": bt.FIXED_TRAINING["seed"],
+        }
 
     @property
     def threshold(self) -> float:
@@ -364,6 +378,14 @@ class BaselineRunner:
         if n != done or len(payload.get("selection_records", [])) != done:
             reasons.append("history_length_mismatch")
         sampling = payload.get("sampling", [])
+        if payload.get("run_seed") != self.seed:
+            reasons.append("checkpoint_run_seed_mismatch")
+        if any(
+            not isinstance(rec.get("sampling_seed"), list)
+            or rec["sampling_seed"][:1] != [self.seed]
+            for rec in sampling
+        ):
+            reasons.append("sampler_seed_mismatch")
         if len(sampling) != done:
             reasons.append("sampler_state_length_mismatch")
         else:
@@ -392,6 +414,9 @@ class BaselineRunner:
         effective = bt.check_device_policy(
             self.dataset_profile, tr["device"], self.device, self.epoch_limit
         )
+        bt.check_run_seed(self.dataset_profile, self.run_seed)
+        if plan.seed is not None and plan.seed != self.seed:
+            raise bt.ConfigValidationError("run plan seed differs from the runner seed")
         run_dir = gate.run_dir
         pre = gate.pre_run or {}
         device = bt.resolve_device(effective)
@@ -569,7 +594,9 @@ class BaselineRunner:
             {
                 "model": info,
                 "device_type": device.type,
-                "hyperparameters": bt.FIXED_TRAINING,
+                "seed": self.seed,
+                **self.seed_record(),
+                "hyperparameters": {**bt.FIXED_TRAINING, "seed": self.seed},
                 "max_epochs": max_epochs,
                 "epochs_run": last_epoch,
                 "synthetic_epoch_limit": self.epoch_limit,
@@ -586,7 +613,12 @@ class BaselineRunner:
         write_json_new(run_dir / TIMING_NAME, {"epochs": st["timing"]})
         write_json_new(
             run_output_path(run_dir, "sampler_record"),
-            {"policy": bd.SAMPLING_POLICY, "seed": self.seed, "epochs": st["sampling"]},
+            {
+                "policy": bd.SAMPLING_POLICY,
+                "seed": self.seed,
+                **self.seed_record(),
+                "epochs": st["sampling"],
+            },
         )
         write_json_new(
             run_output_path(run_dir, "threshold_record"),
@@ -626,6 +658,7 @@ class BaselineRunner:
         snap = _snapshot(model, opt, sched)
         payload = {
             **identity,
+            **self.seed_record(),
             "completed_epoch": epoch,
             "next_epoch": epoch + 1,
             "training_finished": finished,
@@ -737,6 +770,7 @@ class BaselineRunner:
             "channels": list(CHANNELS),
             "parameter_count": info["trainable_parameters"],
             "seed": self.seed,
+            **self.seed_record(),
             "config_canonical_sha256": canonical_json_sha256(dict(self.config)),
             "split_canonical_sha256": canonical_json_sha256(split),
             "preprocessing_policy": PREPROCESS_POLICY,
@@ -805,6 +839,8 @@ class BaselineRunner:
             )
             per_case.append(metric)
         summary = {
+            "seed": self.seed,
+            **self.seed_record(),
             "official_output": "ungated",
             "threshold": bt.THRESHOLD,
             "threshold_source": bt.THRESHOLD_SOURCE,
@@ -843,7 +879,15 @@ def _snapshot(model, opt, sched) -> dict[str, Any]:
 
 
 def _build(
-    config_path, plan_kwargs, cache_dir, repo_root, forbidden_ids, device, epoch_limit, memory_probe
+    config_path,
+    plan_kwargs,
+    cache_dir,
+    repo_root,
+    forbidden_ids,
+    device,
+    epoch_limit,
+    memory_probe,
+    seed=None,
 ):
     cfg = prepare_config(config_path)
     plan = build_plan(
@@ -857,12 +901,18 @@ def _build(
     profile = dataset_profile(plan, cfg, repo_root)
     # refused device / override / epoch_limit: before the gate (no folder, run ID unused)
     bt.check_device_policy(profile, cfg["training"]["device"], device, epoch_limit)
+    # run seed (SEED_POLICY): explicit and approved for formal runs; the caller's seed and the
+    # RunPlan seed must agree. Refused here: before the gate (no folder, run ID unused).
+    bt.check_run_seed(profile, seed)
+    if plan.seed != seed:
+        raise bt.ConfigValidationError("seed differs between the command line and the RunPlan")
     runner = BaselineRunner(
         cfg,
         Path(cache_dir),
         device=device,
         epoch_limit=epoch_limit,
         forbidden_ids=tuple(forbidden_ids),
+        run_seed=seed,
         dataset_profile=profile,
         **({"memory_probe": memory_probe} if memory_probe is not None else {}),
     )
@@ -883,6 +933,7 @@ def run_baseline(
     device: str | None = None,
     epoch_limit: int | None = None,
     memory_probe: Callable[[], int | None] | None = None,
+    seed: int | None = None,
 ) -> dict[str, Any]:
     """Config checks (1-4) -> RunPlan (5) -> gate + manifests (6-7) -> runner (8)."""
     plan, runner = _build(
@@ -894,6 +945,7 @@ def run_baseline(
         device,
         epoch_limit,
         memory_probe,
+        seed,
     )
     if plan.run_id in brs.RETIRED_RUN_IDS:
         raise bt.ConfigValidationError("run ID is retired and may not be reused")
@@ -926,6 +978,7 @@ def resume_baseline(
     device: str | None = None,
     epoch_limit: int | None = None,
     memory_probe: Callable[[], int | None] | None = None,
+    seed: int | None = None,
 ) -> dict[str, Any]:
     """EXPLICIT resume of an interrupted run (same run ID, same plan). Never called
     automatically; raises ``run_control.lifecycle.ResumeRefusedError`` on any mismatch."""
@@ -938,6 +991,7 @@ def resume_baseline(
         device,
         epoch_limit,
         memory_probe,
+        seed,
     )
     if plan.run_id in brs.RETIRED_RUN_IDS:
         from neuroscan_ai.run_control.lifecycle import ResumeRefusedError  # noqa: PLC0415

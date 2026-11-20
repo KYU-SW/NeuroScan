@@ -55,6 +55,9 @@ class RunPlan:
     validation_aliases: tuple[str, ...] = ()  # train stage only: cases from the val split
     # alias -> role -> input file; only SHA-256 hashes keyed by case key reach the manifest
     input_files: dict[str, dict[str, Path]] = field(default_factory=dict)
+    # explicit run seed (None: the runner's own default); it must equal the runner seed, which
+    # both manifests record as determinism.seed
+    seed: int | None = None
 
     @property
     def required_outputs(self) -> tuple[str, ...]:
@@ -97,6 +100,10 @@ def build_plan(**kw: Any) -> RunPlan:
     plan = RunPlan(**kw)
     if not re.match(r"^[a-z0-9][a-z0-9._-]{2,63}$", plan.run_id):
         raise RunPlanError("run_id must be lower-case [a-z0-9._-], 3-64 chars")
+    if plan.seed is not None and (
+        isinstance(plan.seed, bool) or not isinstance(plan.seed, int) or plan.seed < 0
+    ):
+        raise RunPlanError("seed must be a non-negative integer")
     if plan.stage not in STAGES:
         raise RunPlanError(f"unknown stage '{plan.stage}'")
     if plan.split_name in ALWAYS_REFUSED_SPLITS:

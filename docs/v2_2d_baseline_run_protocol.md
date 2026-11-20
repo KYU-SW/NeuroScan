@@ -338,3 +338,34 @@ Training history, Validation metrics, Sampler record, 사례별 Probability·Ung
 최종 Model state가 Byte 단위로 같고 `compare_run_bundles` 판정은 `exact_match`다. KeyboardInterrupt(Epoch 3),
 Memory Guard(Epoch 1), Epoch 3 도중 강제 중단 후 Resume도 같은 결과다. Timing·Progress·Resource·
 Interruption 기록은 비교에서 제외한다. CPU 합성 결과이며 CUDA에서의 동일성은 실제 Run에서 확인해야 한다.
+
+## 14. Run Seed 정책 `seed_policy_v2_baseline_explicit_run_seed_v1`
+
+정식 Run은 Seed를 CLI에서 명시한다: `scripts/run_v2_2d_baseline.py run --run-id ID --seed N ...`
+(`resume`도 같다). 허용값은 0 이상 정수이고, 정식 ISLES Run은 승인 목록 `42`, `43`, `44`만 허용한다.
+숫자로만 쓴 값만 받는다(부호·소수점·공백·문자열 거부). Seed 누락, 정수가 아닌 값, 음수, 목록 밖 값,
+CLI Seed와 RunPlan Seed 불일치는 모두 Gate 전에 거부된다(Dataset·Model·Run 폴더 생성 0건, Run ID 미사용).
+
+- Config의 `training.seed: 42`는 기본 학습 정책 참고값으로 남긴다(Config Hash 불변). 정식 Run의 실제 Seed는
+  CLI → `RunPlan.seed` → `BaselineRunner.run_seed` 하나다. Seed 없이 실행할 수 있는 것은 합성 Run뿐이다
+  (이때 참고값 42 사용).
+- 하나의 Seed가 Model 초기화, Python·NumPy·Torch CPU·CUDA RNG, Epoch별 Sampling(`[seed, epoch]`)과
+  데이터 순서, Resume Checkpoint의 RNG 상태 전부를 정한다. 결정론 설정은 Seed와 무관하게 고정이다.
+- 기록 위치: Pre-run·Post-run Manifest `determinism.seed`, RunPlan `seed`, Best·Last Checkpoint `seed`·
+  `seed_policy`·`sampler.seed`, Resume Checkpoint `seed`(Identity 필드), Training history `seed`·
+  `seed_policy`·`config_reference_seed`·`hyperparameters.seed`·`model.init_seed`, Sampler record `seed`,
+  Validation metrics·Aggregate `seed`. Checkpoint·Resume Checkpoint·History·Sampler·Validation metrics·
+  Aggregate에는 `seed_policy`, `run_seed`, `config_reference_seed`(42)를 함께 쓴다. `run_seed`가 참고값과
+  달라도 의도된 명시 Seed다. RunPlan·Runner·Checkpoint 사이 실제 Seed가 다르면 거부한다.
+- 실행 중 Seed는 바뀌지 않는다. Resume는 Run이 시작된 Seed로만 한다: Pre-run Manifest의 Seed와 다르면
+  `seed_mismatch`, Checkpoint Identity의 Seed와 다르면 `seed_mismatch`(Identity 검사), Checkpoint
+  `run_seed`와 다르면 `checkpoint_run_seed_mismatch`, Sampler 기록의 Seed와 다르면 `sampler_seed_mismatch`로
+  거부되고 아무것도 쓰지 않는다(Segment 추가 없음, 자동 재시도 없음). Seed를 자동으로 고르거나 실패 후 바꾸는 경로는 없다.
+- Seed는 전처리 Cache 내용에 영향을 주지 않는다. 그래도 Cache Gate의 Commit 일치 규칙(13.2)은 그대로다:
+  이 정책을 넣은 Commit에서는 기존 Cache(`2d_baseline_v1`, Commit `1901ce7`)를 쓸 수 없고 새 Commit에서
+  새 Cache Version을 만들어야 한다. Seed별 Cache는 만들지 않는다(세 Seed가 같은 Cache를 쓴다).
+
+공식 다중 Seed 계획: 새 Commit·새 Cache에서 Seed 42, 43, 44를 각 1회 실행한다. 세 Run은 Commit, Config,
+Cache, Split, Package Lock, Architecture, Hyperparameter, Threshold 0.5, 환경·결정론 설정이 같고 Seed와
+Run ID만 다르다. Commit `1901ce7`의 Seed 42 Run(`v2-2d-baseline-seed42-a-r3`, `v2-2d-baseline-seed42-b`)은
+실행 재현성 검증 결과로 보존하며 3-Seed 집계에 섞지 않는다.
