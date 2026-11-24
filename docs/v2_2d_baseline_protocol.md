@@ -1,7 +1,8 @@
 # v2 2D Baseline 프로토콜
 
-> 상태: **설계·학습 Hyperparameter 확정, Training Runner는 합성 검증 단계.** 실제 학습, 추론,
-> Threshold 탐색은 아직 실행하지 않았고 각각 별도 승인 대상이다. Hyperparameter·Runner·산출물·실패
+> 상태: **개발용 동결 (2026-11-24).** 공식 3-Seed(42·43·44) 학습과 Validation 분석을 마쳤고, 개발용
+> 고정 Threshold는 **0.50**(`threshold_v2_2d_baseline_fixed_0_50_v1`)이다(§10). Test·Final Test·SOOP는
+> 접근하지 않았다. 결과·한계는 `docs/v2_2d_baseline_results.md`, Hyperparameter·Runner·산출물·실패
 > 기록은 `docs/v2_2d_baseline_run_protocol.md`에 있다.
 
 - 코드: `ai/neuroscan_ai/v2/` — `unet_2d`(모델), `geometry`(1 mm 격자·역변환),
@@ -227,6 +228,9 @@ Threshold가 0.5가 아니거나 Gated 기준인 기록은 거부한다. 선택 
 - Test·Final Test는 쓰지 않는다. val 외 Split을 요청하면 거부한다.
 - 기록 `training/threshold_search.json`은 한 번만 쓰고, 다시 쓰려 하면 거부한다. 이 탐색은 학습 Run에
   포함되지 않으며(`baseline_v1` 필수 산출물 아님), 별도 승인 후 고정 Checkpoint로 실행한다.
+- 실행 기록: Seed 42 Checkpoint(Commit `1901ce7`, Epoch 75)에서 한 번 실행했다
+  (`results/v2_threshold_analysis/v2_2d_baseline_seed42_v1/`). 규칙상 추천 후보는 0.45였으나 동결하지
+  않았고, 3-Seed 안정성 비교 후 0.50을 동결했다(§10). 탐색은 다시 하지 않는다.
 
 ## 8. 실행 통제 연결
 
@@ -242,7 +246,20 @@ Smoke Runner의 기본 Profile `smoke_v1`과 기존 Smoke 결과는 바뀌지 �
 
 ## 9. 아직 하지 않은 것 (별도 승인 필요)
 
-- 실제 ISLES Train·Val 데이터 준비(Alias 대응표·Split)와 정식 학습 실행
 - 연속 붕괴(예: 여러 Epoch 연속 빈 Prediction) 중단 정책
-- Validation Threshold 탐색 실행
-- Test·Final Test·SOOP 평가
+- Test·Final Test·SOOP 평가, 외부 검증
+- 2.5D 구현·학습(설계 목표만 기록, `docs/v2_2d_baseline_results.md`)
+
+## 10. 개발용 동결 (2026-11-24)
+
+- 모델 `neuroscan_v2_2d_baseline_v1`(채널 36·72·144·288, 파라미터 2,439,577), 전처리
+  `preprocess_v2_isles_1mm_inplane_v1`, 공식 Run Seed 42·43·44(Commit `2969fed`, Cache v2).
+- Threshold **0.50**, 정책 `threshold_v2_2d_baseline_fixed_0_50_v1`, 근거
+  `multiseed_validation_stability_selected`. Checkpoint 선택 Threshold도 0.50이다. 공식 출력은
+  Ungated Prediction, Gated는 비교용이다.
+- 0.45는 추천 후보로 보존하되 선택하지 않았다(`negligible_dice_gain_with_consistent_fp_increase`):
+  3-Seed 평균 Dice 이득 +0.0007(Seed 간 SD 0.0089), FP +5.46 mL, 과분할 +5.32 mL, 비중첩 Component
+  +2개, Recall 이득은 Seed 43의 병변 1개뿐이고, 같은 Validation을 Checkpoint와 Threshold 선택에 함께 썼다.
+- 0.50은 개발용 고정값이다. Test 평가 전에는 임상적 최종 Threshold로 표현하지 않는다.
+- "동결"은 현재 개발 기준을 더 이상 Validation 결과에 맞춰 바꾸지 않는다는 뜻이다. Test 성능을 보장하지
+  않는다. 결정 기록: `results/v2_multiseed_analysis/v2_2d_baseline_v1/freeze_decision.json`.

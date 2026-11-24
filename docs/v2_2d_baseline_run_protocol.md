@@ -1,8 +1,8 @@
 # v2 2D Baseline Training Runner 프로토콜
 
-> 상태: **합성 Runner 검증 단계.** Training Loop, Validation, 산출물, Manifest Gate, 실패 동작은 합성
-> 데이터로만 검증했다. 실제 ISLES 학습·추론·Threshold 탐색은 실행하지 않았고 각각 별도 승인 대상이다.
-> 합성 결과는 성능 결과가 아니다.
+> 상태: **공식 3-Seed Run 완료, 개발용 동결 (2026-11-24).** Seed 42·43·44 Run이 모두 완료·검증됐다
+> (§15). 개발용 Threshold는 0.50이다. Test·Final Test·SOOP는 접근하지 않았다. 합성 테스트 결과는 성능
+> 결과가 아니다.
 
 - 코드: `ai/neuroscan_ai/v2/` — `baseline_training`(고정 Hyperparameter·검증·Loss·1 Epoch),
   `baseline_dataset`(사례·Slice·Padding·Sampling), `baseline_inference`(Validation·붕괴 검사),
@@ -194,7 +194,9 @@ ID가 있으면 `[redacted]`, 성공·실패 Validation 사례 수, 접근 Split
 
 ## 12. 해석상 한계
 
-- Validation 사례로 Checkpoint를 고르므로 Validation 지표는 낙관적으로 편향된다.
+- Validation 사례로 Checkpoint를 고르므로 Validation 지표는 낙관적으로 편향된다. 개발용 Threshold
+  결정(0.50)에도 같은 Validation을 썼다.
+- Test는 아직 접근하지 않았다. Validation 음성 사례는 1건뿐이다. 결과는 임상 성능 주장에 쓸 수 없다.
 - 1 mm 모델 격자에서 원본 Voxel보다 작은 예측은 원본 격자 복원 후 0.5를 넘지 못해 사라질 수 있다
   (`docs/v2_2d_baseline_protocol.md`). 작은 병변 Recall로 감시하고 Probability Map은 항상 보존한다.
 
@@ -369,3 +371,34 @@ CLI Seed와 RunPlan Seed 불일치는 모두 Gate 전에 거부된다(Dataset·M
 Cache, Split, Package Lock, Architecture, Hyperparameter, Threshold 0.5, 환경·결정론 설정이 같고 Seed와
 Run ID만 다르다. Commit `1901ce7`의 Seed 42 Run(`v2-2d-baseline-seed42-a-r3`, `v2-2d-baseline-seed42-b`)은
 실행 재현성 검증 결과로 보존하며 3-Seed 집계에 섞지 않는다.
+
+## 15. 공식 3-Seed 결과와 개발용 동결
+
+| Run ID | Seed | Best / Last Epoch | 비고 |
+|---|---|---|---|
+| `v2-2d-baseline-seed42-multiseed-v1` | 42 | 75 / 95 | 단일 실행 |
+| `v2-2d-baseline-seed43-multiseed-v1` | 43 | 58 / 78 | 외부 종료 후 Resume 1회(Epoch 63부터, 엄격 Resume 검사 통과) |
+| `v2-2d-baseline-seed44-multiseed-v1` | 44 | 57 / 77 | 단일 실행 |
+
+- 세 Run 모두 verify_run ok, Manifest·Seal 유효, Train 176 / Validation 37 / Test 0 / Final Test 0 /
+  SOOP 0, Commit `2969fed`, Cache v2(Index Seal `7207ffad…`).
+- Validation 대표값(Threshold 0.50, Ungated, 평균 ± 표본 SD ddof=1): Dice 0.7786 ± 0.0089, Lesion-wise
+  Recall 0.8022 ± 0.0292. 전체 지표와 한계는 `docs/v2_2d_baseline_results.md`, 기록은
+  `results/v2_multiseed_analysis/v2_2d_baseline_v1/`(git 제외).
+- 개발용 동결 Threshold 0.50(`threshold_v2_2d_baseline_fixed_0_50_v1`). 코드의 Checkpoint 선택·
+  `threshold_record`(0.5, `baseline_checkpoint_fixed_0_5`)는 그대로이며 값이 같다.
+- Cache Commit·Config Binding: 이후 **어떤 Commit이든**(문서만 바꿔도) HEAD가 달라지므로 Cache v2는
+  신규 학습에 쓸 수 없다.
+  - 기존 Cache v2는 생성 Commit `2969fed490dbbab07680fc77ba8e22b53135860d`와 생성 시 Config canonical
+    SHA-256 `ede262720b34504b801d950ac180c449ebf038ee966aee3a1354ab48274e565d`(Index 기록값)에 결합돼 있다.
+  - 신규 학습 Gate 거부 조건(구현된 동작): 현재 Git Commit이 Cache 생성 Commit과 다름
+    (`cache_git_commit_mismatch`), 현재 Config canonical Hash가 Cache 기록값과 다름
+    (`config_canonical_sha256_mismatch`), Working Tree가 dirty(`working_tree_not_clean`), Cache Index·
+    Manifest Seal 또는 배열 Hash 불일치(`cache_index_seal_mismatch`, `cache_manifest_seal_mismatch`,
+    `cache_array_hash_mismatch:*`).
+  - 따라서 Config 내용이 바뀌면 아직 새 Commit을 만들지 않았더라도 기존 Cache는 신규 학습 Gate에서
+    거부된다. 이번 Config 변경을 적용한 상태에서 Cache v2가 `config_canonical_sha256_mismatch`와
+    `working_tree_not_clean`으로 거부되는 것은 의도된 동작이며, 새 정책이 아니라 구현된 Gate 동작의
+    문서화다.
+  - 기존 완료 Run의 verify_run과 결과 검증(Seal, Hash)은 계속 유효하다. 신규 학습에는 Clean Commit에서
+    생성한 새 Cache Version이 필요하다. 현재 단계에서는 Cache를 재생성하지 않는다.

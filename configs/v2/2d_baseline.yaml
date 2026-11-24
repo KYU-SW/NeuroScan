@@ -1,11 +1,11 @@
-# NeuroScan v2 2D baseline (design fixed; formal training NOT yet approved).
-# Code, synthetic tests and protocol only. Training hyperparameters are pending approval and are
-# intentionally left null; nothing here was tuned on real data.
+# NeuroScan v2 2D baseline (development frozen 2026-11-24; see development_freeze below).
+# Formal 3-seed runs (42/43/44, commit 2969fed, cache v2) completed and verified. The development
+# threshold is fixed at 0.50; nothing here is tuned further on validation results.
 
 run_name: v2_2d_baseline
 stage: train
 dataset_id: isles2022
-status: design_fixed_training_pending_approval
+status: development_frozen_threshold_0_50
 
 model:
   id: neuroscan_v2_2d_baseline_v1
@@ -79,7 +79,7 @@ selection:
   dice_tie_tolerance: 0.0001
   tie_breaks: [lower_validation_loss, lower_false_positive_voxel_volume_ml, earlier_epoch]
 
-threshold_search:
+threshold_search:        # executed once on seed 42 (results/v2_threshold_analysis/); not repeated
   after_checkpoint_fixed: true
   searches: 1
   split: val
@@ -182,9 +182,29 @@ run_control:
 policies:
   preprocessing: preprocess_v2_isles_1mm_inplane_v1
   inference: v2_2d_slicewise_sigmoid_original_grid_v1
-  threshold: fixed_0.5_selection_then_single_val_search
+  threshold: threshold_v2_2d_baseline_fixed_0_50_v1
   brain_mask: skull_stripped_background_isles_v2
   combination: single_model_2d
+
+development_freeze:       # record only (not read by code); decision record in
+  # results/v2_multiseed_analysis/v2_2d_baseline_v1/freeze_decision.json
+  model_id: neuroscan_v2_2d_baseline_v1
+  model_frozen_for_development: true
+  threshold: 0.5
+  threshold_policy_id: threshold_v2_2d_baseline_fixed_0_50_v1
+  threshold_frozen_for_development: true
+  source: multiseed_validation_stability_selected
+  checkpoint_selection_threshold: 0.5
+  official_output: ungated_prediction
+  gated_output: comparison_only
+  seeds: [42, 43, 44]
+  recommended_but_rejected_candidate: 0.45
+  candidate_0_45: {selected: false, rejected_as_frozen_threshold: true, rejection_reason: negligible_dice_gain_with_consistent_fp_increase}
+  test_evaluated: false
+  final_test_accessed: false
+  clinical_model: false
+  external_validation_completed: false
+  scope: development fixed threshold; not a clinical final threshold before test evaluation
 
 # ---- long-run operation (no effect on results; checked against code by
 # ---- baseline_runner.validate_operational_config; never tuned or changed automatically)
