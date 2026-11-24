@@ -1,0 +1,127 @@
+"""v2 2.5D baseline validation ``v2_25d_slicewise_stack_sigmoid_original_grid_v1``.
+
+Per validation case: every slice z is predicted from its 3-slice stack (the training stack function;
+padding cropped), the probability is restored to the original grid and thresholded there at the
+fixed 0.5. The UNGATED prediction is the official output; the gated prediction (AND original-grid
+brain mask) is written for comparison only. Stop conditions: a probability outside [0, 1] or
+non-finite, non-finite validation loss, any validation case predicted entirely 1, a required result
+missing. No threshold search.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import numpy as np
+import torch
+
+from neuroscan_ai.v2.baseline_25d_dataset import NeighborStackView, batches, image_view
+from neuroscan_ai.v2.baseline_outputs import OriginalGridOutputs, build_outputs
+from neuroscan_ai.v2.baseline_slices import infer_volume
+from neuroscan_ai.v2.baseline_training import (
+    THRESHOLD,
+    NonFiniteLossError,
+    TrainingStop,
+    combined_loss,
+)
+from neuroscan_ai.v2.safety_metrics import case_metrics, summarize, ungated_vs_gated
+
+INFERENCE_POLICY = "v2_25d_slicewise_stack_sigmoid_original_grid_v1"
+
+
+class ProbabilityRangeError(TrainingStop):
+    stage = "validation"
+
+
+class PredictionCollapseError(TrainingStop):
+    stage = "validation"
+
+
+class MissingValidationResultError(TrainingStop):
+    stage = "validation"
+
+
+def predict_model_grid(
+    model: torch.nn.Module, case: Any, device: torch.device, batch_size: int
+) -> np.ndarray:
+    """(X, Y, Z) probability on the model grid; slice z from the stack centred on z."""
+    view = NeighborStackView(image_view(case))
+    prob = infer_volume(model, view, batch_size=batch_size, device=str(device))
+    if not np.isfinite(prob).all() or prob.min() < 0.0 or prob.max() > 1.0:
+        raise ProbabilityRangeError("model probability non-finite or outside [0, 1]")
+    return prob
+
+
+@torch.no_grad()
+def validation_loss(
+    model: torch.nn.Module, cases: list, device: torch.device, batch_size: int
+) -> float:
+    """Training loss over every brain slice of the validation cases (sample-weighted mean)."""
+    model.eval()
+    order = [(ci, z) for ci, c in enumerate(cases) for z in c.brain_slices]
+    tot, n = 0.0, 0
+    for b in batches(cases, order, batch_size):
+        loss, _, _ = combined_loss(
+            model(b["image"].to(device)),
+            b["target"].to(device),
+            b["valid_region_mask"].to(device),
+        )
+        k = int(b["image"].shape[0])
+        tot += float(loss) * k
+        n += k
+    if n == 0 or not np.isfinite(tot):
+        raise NonFiniteLossError("validation loss non-finite or empty")
+    return tot / n
+
+
+def evaluate(
+    model: torch.nn.Module,
+    cases: list,
+    device: torch.device,
+    batch_size: int,
+    keep_outputs: bool = True,
+) -> dict[str, Any]:
+    """Validation at threshold 0.5 on the original grid (metrics, collapse record, outputs)."""
+    if not any(c.original_gt.any() for c in cases):
+        raise MissingValidationResultError("all validation cases are lesion-free; refused")
+    model.eval()
+    outputs: dict[str, OriginalGridOutputs] = {}
+    ung_m, gat_m = [], []
+    total_vox = pos_vox = all_one = 0
+    for c in cases:
+        res = build_outputs(predict_model_grid(model, c, device, batch_size), c.prepared, THRESHOLD)
+        if keep_outputs:
+            outputs[c.case_key] = res
+        aff = res.grid.affine
+        ung_m.append(case_metrics(res.ungated, c.original_gt, aff, output="ungated"))
+        gat_m.append(case_metrics(res.gated, c.original_gt, aff, output="gated"))
+        total_vox += int(res.ungated.size)
+        pos_vox += int(res.ungated.sum())
+        all_one += int(bool(res.ungated.all()))
+        del res
+    ung, gat = summarize(ung_m), summarize(gat_m)
+    collapse = {
+        "all_predictions_empty": pos_vox == 0,
+        "cases_predicted_all_one": all_one,
+        "no_lesion_fp_volume_ml": ung["no_lesion_fp_volume_ml"],
+        "positive_voxel_ratio": round(pos_vox / total_vox, 8) if total_vox else None,
+    }
+    if collapse["cases_predicted_all_one"]:
+        raise PredictionCollapseError("a validation prediction is entirely 1")
+    required = (
+        "mean_dice_positive",
+        "false_positive_voxel_volume_ml",
+        "lesion_recall_exploratory",
+        "missed_gt_count",
+    )
+    if any(ung.get(k) is None for k in required) or len(ung_m) != len(cases):
+        raise MissingValidationResultError("required validation result missing")
+    return {
+        "ungated_summary": ung,
+        "gated_summary": gat,
+        "ungated_vs_gated": ungated_vs_gated(ung, gat),
+        "per_case_ungated": ung_m,
+        "per_case_gated": gat_m,
+        "collapse": collapse,
+        "outputs": outputs,
+    }

@@ -1,0 +1,271 @@
+# NeuroScan v2 2.5D baseline (implemented and tested on synthetic data; NOT trained).
+# Only the input context differs from the frozen 2D baseline. batch_status is "candidate": formal
+# runs are refused until the CUDA memory smoke is reviewed and the status is approved separately.
+run_name: v2_25d_baseline
+stage: train
+dataset_id: isles2022
+status: implemented_synthetic_verified_training_not_approved
+
+model:
+  id: neuroscan_v2_25d_baseline_v1
+  levels: 4
+  channels: [36, 72, 144, 288]
+  block: conv3x3-instancenorm_affine-relu_x2
+  downsample: maxpool2
+  upsample: convtranspose2x2_stride2
+  in_channels: 6            # 3-slice stack; order fixed below
+  input_channels: [dwi_z-1, adc_z-1, dwi_z, adc_z, dwi_z+1, adc_z+1]
+  out_channels: 1           # logit -> sigmoid probability
+  trainable_parameters: 2440873
+  input_multiple: 8
+  pretrained_weights: null
+
+data:
+  split_source: data/splits/split_v1_seed42.json   # read-only; train 176 / val 37 (ISLES only)
+  train_split: train
+  validation_split: val
+  forbidden_splits: [test, final_test]
+  soop: excluded
+
+preprocessing:
+  policy: preprocess_v2_isles_1mm_inplane_v1
+  slice_axis: 2
+  slice_axis_resampled: false
+  target_grid:            # checked against code by baseline_preprocess.validate_policy_config
+    inplane_spacing_mm: [1.0, 1.0]
+    preserve_z_spacing: true
+    size_policy: [integer_snap_if_close, otherwise_ceil]   # raw = size * spacing / 1.0
+    integer_snap_rtol: 1.0e-6
+    integer_snap_atol: 1.0e-6
+  gt_decode:
+    policy_id: binary_mask_decode_v1_atol_1e_6
+    decoded_values: true            # NIfTI scaling applied
+    use_get_unscaled: false
+    use_threshold_binarization: false
+    zero_atol: 1.0e-6
+    one_atol: 1.0e-6
+    reject_other_values: true
+    reject_nan_inf: true
+  grid_alignment: voxel0_outer_corner_fixed_direction_cosines_kept
+  interpolation: {dwi: linear, adc: linear, gt: nearest, brain_mask: nearest}
+  brain_mask_grid: original
+  normalisation: per_case_zscore_over_brain_mask
+  adc_values_converted: false
+  padding:
+    rule: zero_end_to_multiple_of_8
+    values: {dwi_z: 0.0, adc_z: 0.0, gt: 0, brain_mask: 0}
+    valid_region_mask: real_1_padding_0
+    loss_region: valid_region_mask_only   # BCE and Dice, per-sample mean
+    inference: crop_padding_then_restore_to_original_grid
+
+outputs:
+  grid: original
+  probability_restore: linear
+  brain_mask_roles:
+    original_grid: [final_gating, boundary_analysis, original_space_qa]
+    model_grid: [input_normalisation, model_input_qa]
+    nearest_roundtrip: [xor_vs_original, roundtrip_interpolation_qa]
+  threshold_applied_on: original_grid
+  official_output: ungated
+  gated: comparison_only           # gated = ungated AND brain_mask
+  outside_mask_predictions: recorded_never_removed
+  boundary_record: [outside_brain_mask_voxels, outside_brain_mask_ratio, touches_image_edge, min_distance_to_brain_boundary_mm, boundary_warnings]
+
+selection:
+  split: val
+  threshold: 0.5
+  output: ungated
+  primary: mean_dice_positive_cases
+  dice_tie_tolerance: 0.0001
+  tie_breaks: [lower_validation_loss, lower_false_positive_voxel_volume_ml, earlier_epoch]
+
+threshold_search:         # no 2.5D search; separate approval after the 3-seed results
+  enabled: false
+  comparison_threshold_with_2d: 0.5
+  test_used: false
+
+safety_metrics:
+  grid: original
+  connectivity: 26
+  match_rule: overlap_ge_1_voxel_exploratory_not_clinical_tp
+  small_lesion_bins_ml: [0.1, 0.5, 1.0]
+  false_positive_voxel_volume_ml: pred_and_not_gt          # voxel-level; selection tie-break
+  no_gt_overlap_component_volume_ml: components_without_gt_overlap
+  no_gt_overlap_component_count: components_without_gt_overlap
+  oversegmentation_volume_ml: outside_gt_in_gt_overlapping_components
+  thick_slice_policies:    # two separate rules; never merged or used interchangeably
+    isles_subgroup:
+      policy_id: isles_v1_qa_thick_subgroup_3mm
+      effective_z_spacing_mm_gt: 3.0
+      purpose: analysis_subgroup
+    soop_provisional_warning:
+      policy_id: soop_provisional_thick_warning_5mm
+      effective_z_spacing_mm_gt: 5.0
+      slice_thickness_mm_gte: 5.0
+      provisional: true
+
+training:                 # approved; checked against code by baseline_training.validate_hyperparameters
+  max_epochs: 100
+  early_stopping_patience: 20
+  batch_size: 32
+  num_workers: 0
+  seed: 42
+  precision: fp32
+  amp: false
+  tf32_matmul: false
+  tf32_convolution: false
+  deterministic_algorithms: true
+  cudnn_benchmark: false
+  device: cuda                    # device_policy_v2_baseline_cuda_required_v1 (formal ISLES runs)
+  augmentation: none              # no augmentation approved
+  optimizer: {name: adamw, learning_rate: 1.0e-3, weight_decay: 1.0e-4}
+  scheduler: {name: cosine_annealing, minimum_learning_rate: 1.0e-6, step: epoch, t_max_epochs: 100}
+  loss:
+    dice_weight: 1.0
+    bce_weight: 1.0
+    dice_smooth: 1.0
+    region: valid_region_mask
+    reduction: per_sample_mean_then_batch_mean
+  gradient_clipping: {norm_type: 2, max_norm: 1.0}
+  sampling:
+    candidates: brain_mask_slices
+    positive_fraction: 0.5
+    order: deterministic_run_seed_and_epoch
+    keep_negative_slices: true
+  threshold: {value: 0.5, source: baseline_checkpoint_fixed_0_5, optimized: false}
+  automatic_adjustment: forbidden   # no batch / lr / amp / tf32 / worker / threshold / loss changes, no OOM retry
+
+gt_case_status:           # checked against code by baseline_preprocess.validate_policy_config
+  policy_id: gt_case_status_v1
+  empty_original_gt_is_valid_negative: true
+  positive_gt_lost_after_preprocessing_is_blocked: true
+  negative_case_dice: not_applicable
+  negative_case_fp_metrics_required: true
+
+collapse_policy:          # checked against code by baseline_training.validate_hyperparameters
+  stop_immediately:
+    - non_finite_loss
+    - non_finite_parameter
+    - non_finite_gradient
+    - probability_out_of_range
+    - all_one_validation_prediction
+    - missing_required_validation_output
+    - cuda_oom
+    - deterministic_algorithm_error
+  record_only:
+    - empty_validation_prediction
+    - all_validation_cases_empty_in_single_epoch
+    - low_validation_dice
+  consecutive_empty_policy:
+    action: rely_on_early_stopping
+    early_stopping_patience: 20
+    separate_empty_epoch_limit: null
+
+determinism:
+  precision: fp32
+  automatic_mixed_precision: false
+  tf32_matmul: false
+  tf32_convolution: false
+  torch_deterministic_algorithms: true
+  cudnn_deterministic: true
+  cudnn_benchmark: false
+
+run_control:
+  training_output_profile: baseline_v1
+
+policies:
+  preprocessing: preprocess_v2_isles_1mm_inplane_v1
+  inference: v2_25d_slicewise_stack_sigmoid_original_grid_v1
+  threshold: threshold_v2_25d_initial_fixed_0_50_not_frozen_v1
+  brain_mask: skull_stripped_background_isles_v2
+  combination: single_model_25d
+
+policy_record:            # must equal baseline_25d_runner.POLICY_RECORD exactly
+  model_id: neuroscan_v2_25d_baseline_v1
+  runner_kind: v2_25d_baseline
+  input_channels: 6
+  input_channel_policy_id: input_25d_slice_major_dwi_adc_pairs_v1
+  neighbor_policy_id: neighbor_fixed_adjacent_index_pm1_v1
+  boundary_policy_id: edge_slice_repeat_v1
+  normalization_policy_id: normalization_case_volume_zscore_brainmask_no_slice_renorm_v1
+  inference_policy_id: v2_25d_slicewise_stack_sigmoid_original_grid_v1
+  threshold_policy_id: threshold_v2_25d_initial_fixed_0_50_not_frozen_v1
+  combination_policy_id: single_model_25d
+
+batch_policy:             # a status change alters the config hash: build the cache afterwards
+  batch_size: 32
+  batch_status: candidate          # formal runs are refused while "candidate"
+  automatic_reduction: false
+  fallback_batch_16: separate_approval_required
+  smoke_input_shape: [32, 6, 264, 264]
+  smoke_max_memory_reserved_gib_lt: 14.0
+  smoke_min_available_ram_gib: 4.0
+
+smoke:                    # A/B exact match only; never a performance result
+  run_ids: [v2-25d-smoke-seed42-a, v2-25d-smoke-seed42-b]
+  seed: 42
+  epoch_limit: 2
+  train_cases: 176
+  validation_cases: 37
+  in_official_seed_aggregate: false
+
+official_runs:            # each run needs separate approval
+  - v2-25d-baseline-seed42-multiseed-v1
+  - v2-25d-baseline-seed43-multiseed-v1
+  - v2-25d-baseline-seed44-multiseed-v1
+
+success_criteria:         # pre-specified record only; not read by code
+  comparison_threshold: 0.5
+  reference_2d:
+    thick_lt_0_1_ml_detected_by_seed: {seed42: 8, seed43: 5, seed44: 8}  # of 17 each, 21/51
+    common_missed_gt_components: 28
+    recall_lt_0_1_ml_mean: 0.644
+    oversegmentation_volume_ml_mean: 112.48
+  primary:
+    P1_thick_lt_0_1_ml: {detected_total_gte: 24, components_total: 51, seeds_not_below_2d_gte: 2, judged_on: raw_counts}
+    P2_common_missed_lt: 28
+    P3_recall_lt_0_1_ml_mean_gte: 0.644
+    P4_oversegmentation_ml_mean: {lte: 119.74, improved_if_lt: 112.48}
+  guardrails:
+    dice_mean_gte: 0.7607
+    lesion_recall_mean_gte: 0.7437
+    false_positive_volume_ml_mean_lte: 128.70
+    dice_sample_sd_lte: 0.0179
+    negative_case_fp_ml_each_seed_lte: 0.5
+    outside_brain_mask_voxels_each_seed_lte: 20
+    gt_components_lost: 0
+    forbidden_split_access: 0
+  verdict:
+    SUCCESS: all primary and all guardrails met
+    PARTIAL: some primary not met, all guardrails met
+    FAIL: any guardrail or execution integrity violated
+
+# ---- long-run operation (no effect on results; checked against code by
+# ---- baseline_runner.validate_operational_config; never tuned or changed automatically)
+cache:                    # baseline_cache: results/v2_cache/<version>/, built by scripts/prepare_v2_25d_cache.py
+  policy_id: disk_backed_preprocessed_cache_v1
+  mmap_mode: r
+  max_active_cases: 2
+  overwrite: false
+
+progress:                 # training/progress.json (operational; not in any output hash)
+  atomic_write: true
+  update_frequency: epoch
+  excluded_from_reproducibility_hash: true
+
+resume:                   # training/resume_checkpoint.pt; resume only on explicit request
+  enabled: true
+  update_frequency: epoch
+  automatic_resume: false
+  exact_environment_required: true
+
+resource_monitor:
+  record_process_rss: true
+  record_system_available_memory: true
+  record_cuda_memory: true
+
+host_memory_guard:        # host operating-safety limit, NOT a model / performance threshold
+  policy_id: host_memory_guard_v1
+  check_frequency: epoch
+  minimum_available_gib: 4.0       # current operating candidate; changed only by separate approval after r2
+  automatic_resume: false
