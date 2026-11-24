@@ -6,6 +6,7 @@ import ast
 import copy
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -34,6 +35,17 @@ EXPECTED = {
     "inference_policy_id": "v2_25d_slicewise_stack_sigmoid_original_grid_v1",
     "threshold_policy_id": "threshold_v2_25d_initial_fixed_0_50_not_frozen_v1",
     "combination_policy_id": "single_model_25d",
+}
+
+
+SMOKE_SHA256 = "4847b02986feed74290df16cfa11356b26569fb5e03a04309fc2aefe2a959fb3"
+APPROVAL = {
+    "approval_source": "synthetic_cuda_memory_smoke_v1",
+    "approved_batch_size": 32,
+    "approved_input_shape": [32, 6, 264, 264],
+    "smoke_commit": "13e477ddf3bd5d09c3a0f171b7e38a12a8ee44c6",
+    "max_memory_reserved_bytes": 10_261_364_736,
+    "smoke_result_hash": SMOKE_SHA256,
 }
 
 
@@ -130,9 +142,107 @@ def test_only_the_approved_blocks_differ_from_the_2d_config(cfg):
     assert "development_freeze" not in cfg  # the 2D freeze is not inherited
 
 
-def test_batch_is_a_candidate_and_smoke_settings_match_code(cfg):
+def test_approval_fields_of_the_real_config(cfg):
     b = cfg["batch_policy"]
-    assert b["batch_status"] == "candidate" and b["batch_size"] == 32
+    assert {k: b[k] for k in APPROVAL} == APPROVAL
+    br.check_batch_approval(cfg)
+    doc = DOC.read_text("utf-8")
+    for s in (APPROVAL["approval_source"], APPROVAL["smoke_commit"], SMOKE_SHA256):
+        assert s in doc
+    for s in ("`batch_status: approved`", "7.60 GiB", "9.56 GiB", "4.44 GiB", "17.93 GiB"):
+        assert s in doc
+
+
+def _with_status(cfg, status):
+    c = copy.deepcopy(cfg)
+    c["batch_policy"] |= {**copy.deepcopy(APPROVAL), "batch_status": status}
+    return c
+
+
+def _refused_fields(cfg):
+    with pytest.raises(br.BatchApprovalError) as e:
+        br.validate_25d_policies(cfg)
+    msg = str(e.value)
+    assert not re.search(r"[A-Za-z]:[\\/]|/|\\", msg)  # field names only, no path, no value
+    return set(re.findall(r"batch_policy\.(\w+)", msg))
+
+
+@pytest.mark.parametrize("key", list(APPROVAL))
+def test_missing_approval_field_refused(cfg, tmp_path, key):
+    c = _with_status(cfg, "approved")
+    br.validate_25d_policies(c)
+    del c["batch_policy"][key]
+    assert _refused_fields(c) == {key}
+    with pytest.raises(br.BatchApprovalError):
+        _prepare(tmp_path, c)
+    c["batch_policy"]["batch_status"] = "candidate"  # a candidate needs no approval fields
+    br.validate_25d_policies(c)
+
+
+BAD_APPROVAL = [
+    ("batch_size", 16, {"batch_size", "approved_batch_size", "approved_input_shape"}),
+    ("batch_size", 32.0, {"batch_size"}),
+    ("approved_batch_size", 16, None),
+    ("approved_batch_size", True, None),
+    ("approved_input_shape", [16, 6, 264, 264], None),
+    ("approved_input_shape", [32, 2, 264, 264], None),
+    ("approved_input_shape", [32, 6, 260, 264], None),
+    ("approved_input_shape", [32, 6, 264, 260], None),
+    ("approved_input_shape", [32, 6, 256, 256], None),
+    ("approved_input_shape", [32, 6, 264], None),
+    ("approved_input_shape", "32,6,264,264", None),
+    ("approved_input_shape", None, None),
+    ("approval_source", "other", None),
+    ("smoke_commit", "13e477d", None),
+    ("smoke_commit", APPROVAL["smoke_commit"].upper(), None),
+    ("smoke_commit", APPROVAL["smoke_commit"] + "\n", None),
+    ("smoke_commit", 13, None),
+    ("smoke_result_hash", SMOKE_SHA256[:-1], None),
+    ("smoke_result_hash", SMOKE_SHA256.upper(), None),
+    ("smoke_result_hash", "g" * 64, None),
+    ("max_memory_reserved_bytes", 0, None),
+    ("max_memory_reserved_bytes", -1, None),
+    ("max_memory_reserved_bytes", 14 * 1024**3, None),
+    ("max_memory_reserved_bytes", "10261364736", None),
+    ("max_memory_reserved_bytes", True, None),
+]
+
+
+@pytest.mark.parametrize("key,value,fields", BAD_APPROVAL)
+def test_inconsistent_approval_field_refused(cfg, key, value, fields):
+    c = _with_status(cfg, "approved")
+    c["batch_policy"][key] = value
+    assert _refused_fields(c) == (fields or {key})
+
+
+def test_reserved_memory_limit_is_exclusive_and_matches_the_smoke(cfg):
+    assert br.MAX_RESERVED_BYTES == cs.MAX_RESERVED_GIB * 1024**3
+    c = _with_status(cfg, "approved")
+    c["batch_policy"]["max_memory_reserved_bytes"] = br.MAX_RESERVED_BYTES - 1
+    br.validate_25d_policies(c)
+    assert tuple(br.APPROVED_INPUT_SHAPE) == cs.BATCH_SHAPE
+    assert set(br.APPROVAL_FIELDS) == set(APPROVAL)
+
+
+def test_formal_profile_only_when_approved(cfg):
+    for status, ok in (("candidate", False), ("approved", True)):
+        kw = {
+            "run_id": "v2-25d-baseline-seed42-multiseed-v1",
+            "seed": 42,
+            "epoch_limit": None,
+            "batch_status": _with_status(cfg, status)["batch_policy"]["batch_status"],
+            "counts": br.SMOKE_COUNTS,
+        }
+        if ok:
+            br.check_run_profile(bt.PROFILE_FORMAL, **kw)
+        else:
+            with pytest.raises(br.BatchApprovalError, match="batch_status"):
+                br.check_run_profile(bt.PROFILE_FORMAL, **kw)
+
+
+def test_smoke_settings_match_code(cfg):
+    b = cfg["batch_policy"]
+    assert b["batch_status"] == "approved" and b["batch_size"] == 32
     assert tuple(b["smoke_input_shape"]) == cs.BATCH_SHAPE
     assert b["smoke_max_memory_reserved_gib_lt"] == cs.MAX_RESERVED_GIB
     assert b["smoke_min_available_ram_gib"] == cs.MIN_AVAILABLE_RAM_GIB
@@ -195,9 +305,13 @@ def test_cli_refuses_before_any_data_access(monkeypatch, capsys, tmp_path):
         monkeypatch.setattr(m, name, lambda *a, **k: pytest.fail("must not be reached"))
     a = (tmp_path / "a.json", tmp_path / "s.json", "0" * 64, tmp_path)
     off = "v2-25d-baseline-seed42-multiseed-v1"
+    cand, appr = (_with_status(br.prepare_config(CONFIG), s) for s in ("candidate", "approved"))
+    monkeypatch.setattr(m, "prepare_config", lambda p: cand)
     assert m.run(off, *a, seed_text="42") == 2
     assert "batch_status" in capsys.readouterr().err
+    monkeypatch.setattr(m, "prepare_config", lambda p: appr)
     for rid, seed, smoke, msg in (
+        (off, "42", False, "package lock"),  # approved: profile ok; stops at the lock
         (off, None, False, "seed"),
         (off, "45", False, "seed"),
         ("v2-25d-smoke-seed42-a", "42", False, "smoke run IDs"),
@@ -219,7 +333,7 @@ def test_cli_validate_opens_no_data():
         timeout=300,
     )
     assert out.returncode == 0, out.stderr
-    assert json.loads(out.stdout)["batch_policy"]["batch_status"] == "candidate"
+    assert json.loads(out.stdout)["batch_policy"]["batch_status"] == "approved"
 
 
 def test_cache_script_uses_the_25d_config_and_refuses(monkeypatch, capsys, tmp_path):

@@ -4,7 +4,6 @@ in). No MRI, no ISLES / SOOP access. Synthetic outputs are not performance resul
 from __future__ import annotations
 
 import json
-import shutil
 import signal
 import subprocess
 from pathlib import Path
@@ -89,7 +88,9 @@ def make_world(root: Path) -> SimpleNamespace:
     (repo / ".gitignore").write_text("results/\ndata/\n", encoding="utf-8")
     (repo / "configs/v2").mkdir(parents=True)
     cfg = repo / "configs/v2/25d_baseline.yaml"
-    shutil.copy(REPO / "configs/v2/25d_baseline.yaml", cfg)
+    c = yaml.safe_load((REPO / "configs/v2/25d_baseline.yaml").read_text("utf-8"))
+    c["batch_policy"]["batch_status"] = "candidate"  # independent of the real config status
+    cfg.write_text(yaml.safe_dump(c), encoding="utf-8")
     (repo / "requirements-lock.txt").write_text("torch==synthetic\n", encoding="utf-8")
     subprocess.run([*GIT, "-C", str(repo), "add", "."], check=True)
     subprocess.run([*GIT, "-C", str(repo), "commit", "-q", "-m", "init"], check=True)
@@ -171,9 +172,11 @@ def _common(w, epoch_limit, seed, smoke, sc=None, device="cpu"):
     }
 
 
-def _run(w, run_id, epoch_limit=2, seed=None, smoke=False, sc=None, device="cpu", **kw):
+def _run(
+    w, run_id, epoch_limit=2, seed=None, smoke=False, sc=None, device="cpu", config=None, **kw
+):
     return br.run_baseline(
-        w.cfg,
+        config or w.cfg,
         _plan(w, run_id, seed=seed, **kw),
         w.cache,
         roots=w.roots,
@@ -413,7 +416,133 @@ def test_device_and_seed_rules_hold_for_smoke():
             br.check_seed(br.PROFILE_SMOKE, seed)
 
 
-def test_refused_before_anything_is_created(w):
+APPROVAL = {
+    "batch_size": 32,
+    "batch_status": "approved",
+    "approval_source": "synthetic_cuda_memory_smoke_v1",
+    "approved_batch_size": 32,
+    "approved_input_shape": [32, 6, 264, 264],
+    "smoke_commit": "a" * 40,
+    "max_memory_reserved_bytes": 10 * 1024**3,
+    "smoke_result_hash": "b" * 64,
+}
+MISSING = object()
+BAD_BATCH = {
+    **{f"missing_{k}": {k: MISSING} for k in br.APPROVAL_FIELDS},
+    "batch_size": {"batch_size": 16},
+    "approved_batch_size": {"approved_batch_size": 16},
+    "shape_batch": {"approved_input_shape": [16, 6, 264, 264]},
+    "shape_channel": {"approved_input_shape": [32, 2, 264, 264]},
+    "shape_h": {"approved_input_shape": [32, 6, 260, 264]},
+    "shape_w": {"approved_input_shape": [32, 6, 264, 260]},
+    "source": {"approval_source": "other"},
+    "commit": {"smoke_commit": "A" * 40},
+    "hash": {"smoke_result_hash": "b" * 63},
+    "reserved_zero": {"max_memory_reserved_bytes": 0},
+    "reserved_14_gib": {"max_memory_reserved_bytes": 14 * 1024**3},
+}
+
+
+def _config(w, tmp_path, **batch):
+    """Independent config file: valid approved fields changed by ``batch``."""
+    c = yaml.safe_load(w.cfg.read_text("utf-8"))
+    c["batch_policy"] |= {**APPROVAL, **batch}
+    c["batch_policy"] = {k: v for k, v in c["batch_policy"].items() if v is not MISSING}
+    p = tmp_path / "config.yaml"
+    p.write_text(yaml.safe_dump(c), encoding="utf-8")
+    return p
+
+
+class Reached(Exception):
+    """Marker: the run-control entry was reached."""
+
+
+def _sentinels(mp, plan=False):
+    """Every later step fails at once: training must not start, nothing is opened or created."""
+
+    def stop(*a, **k):
+        pytest.fail("training must not start")
+
+    for mod, names in (
+        (br, ("run_controlled", "build_model", "resume_controlled")),
+        (bt, ("train_one_epoch", "build_optimizer")),
+        (bc, ("check_cache_commit", "verify_cache", "CacheStore", "open_cases")),
+        (bd, ("NeighborStackView", "batches", "epoch_sampling")),
+        (nib, ("load",)),
+        (br.Baseline25DRunner, ("_run",)),
+    ):
+        for n in names:
+            mp.setattr(mod, n, stop)
+    if plan:
+        mp.setattr(br, "build_plan", stop)
+
+
+def _tree(w):
+    return sorted(p.relative_to(w.repo).as_posix() for p in (w.repo / "results").rglob("*"))
+
+
+def _formal(w):
+    dataset = yaml.safe_load(w.cfg.read_text("utf-8"))["dataset_id"]
+    return {"dataset_id": dataset, "seed": 42, "device": "cuda", "epoch_limit": None}
+
+
+@pytest.mark.parametrize("name", list(BAD_BATCH))
+def test_bad_approval_refused_before_plan_cache_model_and_folder(w, tmp_path, monkeypatch, name):
+    cfg, before = _config(w, tmp_path, **BAD_BATCH[name]), _tree(w)
+    _sentinels(monkeypatch, plan=True)
+    with pytest.raises(br.BatchApprovalError):
+        _run(w, OFFICIAL, config=cfg, **_formal(w))
+    with pytest.raises(br.BatchApprovalError):  # smoke and synthetic runs need a valid config too
+        _run(w, "v2-25d-smoke-seed42-a", config=cfg, smoke=True, **_formal(w) | {"epoch_limit": 2})
+    with pytest.raises(br.BatchApprovalError):
+        _run(w, "syn-25d-bad", config=cfg)
+    with pytest.raises(br.BatchApprovalError):
+        br.resume_baseline(
+            cfg, _plan(w, OFFICIAL), w.cache, **_common(w, None, 42, False, device="cuda")
+        )
+    assert _tree(w) == before and not _rd(w, OFFICIAL).exists()
+
+
+def test_candidate_formal_run_refused_before_cache_model_and_folder(w, tmp_path, monkeypatch):
+    cfg, before = _config(w, tmp_path, batch_status="candidate"), _tree(w)
+    _sentinels(monkeypatch)
+    with pytest.raises(br.BatchApprovalError, match="batch_status"):
+        _run(w, OFFICIAL, config=cfg, **_formal(w))
+    assert _tree(w) == before
+
+
+def test_refusal_keeps_the_run_id_usable_and_valid_approval_passes(w, tmp_path, monkeypatch):
+    before = _tree(w)
+    with monkeypatch.context() as mp:
+        _sentinels(mp, plan=True)
+        with pytest.raises(br.BatchApprovalError):
+            _run(w, OFFICIAL, config=_config(w, tmp_path, smoke_commit="x"), **_formal(w))
+    good = _config(w, tmp_path)
+    with monkeypatch.context() as mp:  # same run ID; stopped at the run-control entry
+        _sentinels(mp)
+
+        def reached(*a, **k):
+            raise Reached
+
+        mp.setattr(br.bc, "check_cache_commit", lambda *a, **k: [])
+        mp.setattr(br, "run_controlled", reached)
+        with pytest.raises(Reached):
+            _run(w, OFFICIAL, config=good, **_formal(w))
+    assert _tree(w) == before
+
+
+def test_runner_itself_checks_the_approval_again(w, tmp_path, monkeypatch):
+    cfg = yaml.safe_load(_config(w, tmp_path, smoke_result_hash="x").read_text("utf-8"))
+    runner = br.Baseline25DRunner(cfg, w.cache, device="cpu", epoch_limit=1)
+    plan = SimpleNamespace(dataset_id="synthetic")
+    real = br.Baseline25DRunner._run
+    _sentinels(monkeypatch)
+    with pytest.raises(br.BatchApprovalError):
+        real(runner, SimpleNamespace(run_dir=None, pre_run={}), plan)
+
+
+def test_refused_before_anything_is_created(w, monkeypatch):
+    _sentinels(monkeypatch)
     kw = {"dataset_id": br.prepare_config(w.cfg)["dataset_id"], "seed": 42, "device": "cuda"}
     with pytest.raises(bt.ConfigValidationError, match="batch_status"):
         _run(w, OFFICIAL, epoch_limit=None, **kw)

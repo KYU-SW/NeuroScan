@@ -8,7 +8,8 @@ integrity gate, memory-mapped cases, model.
 
 Run profiles (``check_run_profile``; never chosen automatically):
 - ``formal_isles``: no ``epoch_limit``; refused while the config ``batch_policy.batch_status`` is
-  ``candidate``; the two smoke run IDs are refused.
+  ``candidate``; the two smoke run IDs are refused. The approval fields of an ``approved`` batch are
+  checked with the config (``check_batch_approval``), before the plan.
 - ``formal_isles_smoke``: only the exact run IDs ``v2-25d-smoke-seed42-a`` / ``-b``, seed 42,
   ``epoch_limit`` 2, all 176 train / 37 validation cases. A/B exact-match check only; never a
   performance result and excluded from the 3-seed aggregate.
@@ -106,6 +107,17 @@ POLICY_RECORD: dict[str, Any] = {  # config ``policy_record`` must equal this ex
     "combination_policy_id": COMBINATION_POLICY,
 }
 BATCH_STATUSES = ("candidate", "approved")
+APPROVAL_SOURCE = "synthetic_cuda_memory_smoke_v1"
+APPROVED_INPUT_SHAPE = [32, IN_CHANNELS, 264, 264]
+APPROVAL_FIELDS = (
+    "approval_source",
+    "approved_batch_size",
+    "approved_input_shape",
+    "smoke_commit",
+    "max_memory_reserved_bytes",
+    "smoke_result_hash",
+)
+MAX_RESERVED_BYTES = 14 * 1024**3  # exclusive
 PROFILE_SMOKE = "formal_isles_smoke"
 SMOKE_RUN_IDS = ("v2-25d-smoke-seed42-a", "v2-25d-smoke-seed42-b")
 SMOKE_SEED, SMOKE_EPOCH_LIMIT = 42, 2
@@ -121,6 +133,10 @@ OPERATIONAL_BLOCKS: dict[str, dict[str, Any]] = {
     "host_memory_guard": rm.HOST_MEMORY_GUARD,
 }
 _ABS_PATH = re.compile(r"([A-Za-z]:[\\/])|(^|[\s'\"(])/[^\s]")
+
+
+class BatchApprovalError(bt.ConfigValidationError):
+    """Batch approval missing or inconsistent (the message carries field names only)."""
 
 
 def validate_operational_config(cfg: Mapping[str, Any]) -> None:
@@ -155,8 +171,49 @@ def validate_architecture(cfg: Mapping[str, Any]) -> None:
         raise bt.ConfigValidationError("architecture differs from approval: " + ", ".join(errs))
 
 
+def check_batch_approval(cfg: Mapping[str, Any]) -> None:
+    """Approval fields of an ``approved`` batch: presence, format, mutual agreement, memory limit.
+
+    Config content only: the smoke result file is not opened. A ``candidate`` batch needs no
+    approval fields; formal runs refuse it in ``check_run_profile``.
+    """
+    b = cfg.get("batch_policy") or {}
+    if b.get("batch_status") != "approved":
+        return
+    errs = [k for k in APPROVAL_FIELDS if k not in b]
+    if not errs:
+        shape, batch = b["approved_input_shape"], b.get("batch_size")
+        ints = isinstance(shape, list) and all(type(v) is int for v in shape)
+        if type(batch) is not int or batch != APPROVED_INPUT_SHAPE[0]:
+            errs.append("batch_size")
+        if type(b["approved_batch_size"]) is not int or b["approved_batch_size"] != batch:
+            errs.append("approved_batch_size")
+        if (
+            not ints
+            or shape != APPROVED_INPUT_SHAPE
+            or shape[0] != batch
+            or shape[1] != POLICY_RECORD["input_channels"]
+            or shape[2] % 8
+            or shape[3] % 8
+        ):
+            errs.append("approved_input_shape")
+        if b["approval_source"] != APPROVAL_SOURCE:
+            errs.append("approval_source")
+        for k, n in (("smoke_commit", 40), ("smoke_result_hash", 64)):
+            if not isinstance(b[k], str) or not re.fullmatch(f"[0-9a-f]{{{n}}}", b[k]):
+                errs.append(k)
+        r = b["max_memory_reserved_bytes"]
+        if type(r) is not int or not 0 < r < MAX_RESERVED_BYTES:
+            errs.append("max_memory_reserved_bytes")
+    if errs:
+        raise BatchApprovalError(
+            "batch approval refused: " + ", ".join(f"batch_policy.{k}" for k in errs)
+        )
+
+
 def validate_25d_policies(cfg: Mapping[str, Any]) -> None:
-    """2.5D policy record, RunPlan policies, batch status; no threshold search."""
+    """Batch approval, 2.5D policy record, RunPlan policies, status; no threshold search."""
+    check_batch_approval(cfg)
     errs = []
     if cfg.get("policy_record") != POLICY_RECORD:
         errs.append("policy_record")
@@ -206,6 +263,7 @@ def check_run_profile(
     if profile == bt.PROFILE_SYNTHETIC:
         return
     errs = []
+    refusal = bt.ConfigValidationError
     if profile == PROFILE_SMOKE:
         if run_id not in SMOKE_RUN_IDS:
             errs.append("smoke run ID not approved")
@@ -221,11 +279,12 @@ def check_run_profile(
         if run_id in SMOKE_RUN_IDS:
             errs.append("smoke run IDs are refused for formal runs")
         if batch_status != "approved":
+            refusal = BatchApprovalError
             errs.append("batch_status is not approved; formal run refused")
     else:
         errs.append(f"unknown run profile '{profile}'")
     if errs:
-        raise bt.ConfigValidationError("; ".join(errs))
+        raise refusal("; ".join(errs))
 
 
 def check_device(profile: str, config_device: str, override: str | None, limit: int | None) -> str:

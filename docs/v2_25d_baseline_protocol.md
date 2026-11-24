@@ -82,7 +82,19 @@ Best·Last·Resume Checkpoint, Training history, Validation metrics, Aggregate�
 
 ## 9. Batch와 CUDA Smoke
 
-- `batch_policy.batch_size: 32`, `batch_status: candidate`. candidate인 동안 정식 Run은 거부된다.
+- `batch_policy.batch_size: 32`, `batch_status: approved`. candidate이면 정식 Run은 거부된다.
+- approved이면 승인 필드 6개의 존재·형식·상호 일치와 reserved 메모리 기준(0 초과, 14 GiB 미만)을 Runner가 Config 검사에서
+  확인한다. RunPlan, Cache, Dataset, Model, Run 폴더보다 먼저이며 위반 시 `BatchApprovalError`로 거부한다. Smoke 파일의
+  존재는 요구하지 않고(Commit·Hash는 감사 추적용), Cache·Manifest는 Config Hash로 이 승인 상태에 연결된다.
+- 승인 근거: 합성 CUDA 메모리 Smoke(`synthetic_cuda_memory_smoke_v1`, Commit `13e477ddf3bd5d09c3a0f171b7e38a12a8ee44c6`,
+  결과 파일 SHA-256 `4847b02986feed74290df16cfa11356b26569fb5e03a04309fc2aefe2a959fb3`).
+  - 입력 `[32,6,264,264]`, Seed 42, 2회 × 3 Step. Loss·Output·Parameter exact match, OOM·NaN·Inf·재시도 0.
+  - max allocated 7.60 GiB(8,159,441,408 bytes), max reserved 9.56 GiB(10,261,364,736 bytes), 14 GiB 기준까지
+    4.44 GiB 여유, 최소 가용 RAM 17.93 GiB(각 Step 직후 측정).
+  - Process Peak RSS는 기록되지 않았다(사전 통과 기준 아님). ISLES Smoke의 Runner 자원 기록으로 확인한다.
+  - Batch 16은 실행하지 않았다.
+  - 실제 Cache mmap·Validation·장시간 메모리는 ISLES 2-Epoch Smoke에서 추가 확인한다. 이 Smoke는 실제 ISLES 학습
+    안전성을 최종 보장하는 검사가 아니다.
 - Smoke: 합성 `[32,6,264,264]`, FP32, 같은 Seed·입력으로 2회, 각 3 Step 연속. 통과 조건은 OOM·NaN·Inf 없음,
   두 결과 일치, `max_memory_reserved` < 14 GiB, 가용 RAM ≥ 4 GiB다. 값을 읽지 못하면 실패다.
 - 기록 위치는 `results/v2_smoke/25d_cuda_memory_v1/`(git 제외, 덮어쓰기 거부). 실패하면 기록 후 끝나며 자동 축소,

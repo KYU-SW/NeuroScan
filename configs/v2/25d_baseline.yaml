@@ -194,7 +194,13 @@ policy_record:            # must equal baseline_25d_runner.POLICY_RECORD exactly
 
 batch_policy:             # a status change alters the config hash: build the cache afterwards
   batch_size: 32
-  batch_status: candidate          # formal runs are refused while "candidate"
+  batch_status: approved           # formal runs are refused while "candidate"
+  approval_source: synthetic_cuda_memory_smoke_v1
+  approved_batch_size: 32
+  approved_input_shape: [32, 6, 264, 264]
+  smoke_commit: "13e477ddf3bd5d09c3a0f171b7e38a12a8ee44c6"
+  max_memory_reserved_bytes: 10261364736
+  smoke_result_hash: "4847b02986feed74290df16cfa11356b26569fb5e03a04309fc2aefe2a959fb3"
   automatic_reduction: false
   fallback_batch_16: separate_approval_required
   smoke_input_shape: [32, 6, 264, 264]
